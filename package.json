@@ -1,0 +1,9 @@
+{
+  "name": "fantasy-poker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sim": "node tests/sim.mjs 300 3",
+    "serve": "python3 -m http.server 8080 --directory site"
+  }
+}

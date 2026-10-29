@@ -1,0 +1,20 @@
+name = "fantasy-poker-api"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# The table lives in a SQLite-backed Durable Object (works on the free Workers plan).
+[[durable_objects.bindings]]
+name = "TABLE"
+class_name = "Table"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Table"]
+
+[vars]
+# Comma-separated list of sites allowed to call the API ("*" = anyone).
+ALLOWED_ORIGINS = "https://poker.eliasro.de,http://localhost:8080,http://127.0.0.1:8080"
+
+# If eliasro.de is on Cloudflare DNS, uncomment to serve the API at a nice hostname
+# (then set API_BASE in site/js/config.js to https://poker-api.eliasro.de).
+# routes = [{ pattern = "poker-api.eliasro.de", custom_domain = true }]
