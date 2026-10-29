@@ -71,7 +71,7 @@ step is one write.
 
 ### Optional: auto-deploy the Worker
 
-`.github/workflows/worker.yml` redeploys the Worker on pushes that touch `worker/`. Add repo
+`.github/workflows/worker.yml` can redeploy the Worker from the Actions tab (Run workflow). Add repo
 secrets `CLOUDFLARE_API_TOKEN` (template "Edit Cloudflare Workers") and
 `CLOUDFLARE_ACCOUNT_ID`.
 

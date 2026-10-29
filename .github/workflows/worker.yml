@@ -1,10 +1,9 @@
 name: Deploy API worker to Cloudflare
 
-# Needs repo secrets CLOUDFLARE_API_TOKEN (template "Edit Cloudflare Workers") and CLOUDFLARE_ACCOUNT_ID.
+# Manual only (Actions tab → Run workflow). Needs repo secrets CLOUDFLARE_API_TOKEN
+# (template "Edit Cloudflare Workers") and CLOUDFLARE_ACCOUNT_ID. To redeploy on every push
+# that touches worker/, add:  push: { branches: [main], paths: ['worker/**'] }
 on:
-  push:
-    branches: [main]
-    paths: ['worker/**', '.github/workflows/worker.yml']
   workflow_dispatch:
 
 jobs:
