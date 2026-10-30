@@ -104,6 +104,10 @@ function recordTrail(r) {
 let netChain = Promise.resolve();
 const net = (fn) => (netChain = netChain.then(fn).catch((e) => console.warn(e)));
 let dirty = false;
+// Changes made here that the server hasn't confirmed yet, oldest first. Table edits can be
+// replayed onto someone else's newer version; game moves can't (both of you pressing "next"
+// shouldn't play two steps), so those give way to whoever saved first.
+let pending = [];
 
 function setSync(kind, text) {
   $('#sync').className = `sync ${kind}`;
@@ -111,21 +115,46 @@ function setSync(kind, text) {
 }
 const syncOk = () => setSync(store.label === 'online' ? 'ok' : 'local', store.label === 'online' ? 'Live' : 'Local only');
 
-async function lostRace() {
+// Someone else saved first: take their version and replay our table edits on top of it.
+function rebaseOnto(theirs) {
+  const replay = pending.filter((m) => m.rebase);
+  const dropped = pending.length - replay.length;
+  pending = [];
   dirty = false;
-  toast('Someone else moved first — synced to their version.');
+  state = theirs;
+  for (const m of replay) {
+    const draft = structuredClone(state);
+    if (m.fn(draft) === false) continue;
+    draft.rev = (draft.rev || 0) + 1;
+    draft.updatedAt = Date.now();
+    state = draft;
+    pending.push(m);
+    dirty = true;
+  }
+  if (dropped) toast('Someone else moved first — synced to their version.');
+  else if (replay.length) toast('Merged your table changes with someone else’s.');
+  render();
+}
+
+async function lostRace() {
   const s = await store.load().catch(() => null);
-  if (s) { state = s; render(); }
+  if (s) rebaseOnto(s);
+  else { pending = []; dirty = false; }
 }
 
 const flush = () => net(async () => {
   while (dirty) {
     dirty = false;
+    const sent = pending.length;
     try {
       await store.save(state);
+      pending.splice(0, sent);
       syncOk();
     } catch (e) {
-      if (e instanceof ConflictError) return lostRace();
+      if (e instanceof ConflictError) {
+        await lostRace();
+        continue; // dirty again if edits were replayed
+      }
       dirty = true;
       setSync('err', 'Offline — will retry');
       return;
@@ -136,7 +165,7 @@ const flush = () => net(async () => {
 const pollOnce = () => net(async () => {
   if (dirty) return;
   const s = await store.poll();
-  if (s && dirty) return lostRace(); // they wrote while we were mid-click
+  if (s && dirty) { rebaseOnto(s); flush(); return; } // they wrote while we were mid-click
   if (s) { state = s; render(); }
   syncOk();
 }).catch(() => setSync('err', 'Offline — retrying'));
@@ -153,13 +182,15 @@ async function pollLoop() {
 }
 
 // Apply a change to a copy of the state, show it right away, write it in the background.
-function mutate(fn) {
+// `rebase: true` marks changes that still make sense on top of someone else's newer table.
+function mutate(fn, { rebase = false } = {}) {
   if (!state) return false;
   const draft = structuredClone(state);
   if (fn(draft) === false) return false;
   draft.rev = (draft.rev || 0) + 1;
   draft.updatedAt = Date.now();
   state = draft;
+  pending.push({ fn, rebase });
   dirty = true;
   render();
   flush();
@@ -614,6 +645,70 @@ function openPicker(from) {
 
 // ---------- table editor ----------
 
+// ---------- merging table edits ----------
+
+const PLAYER_FIELDS = ['name', 'preset', 'out', 'emoji', 'avatar', 'label', 'tagline'];
+const clean = (k, v) => (k === 'name' ? v.trim() || 'Player' : typeof v === 'string' ? v.trim() : v);
+
+// Only what this person changed: settings keys, player fields, single traits, buy-ins, adds, removals.
+function editorDiff(orig, ed) {
+  const settings = {};
+  for (const k in ed.settings) if (ed.settings[k] !== orig.settings[k]) settings[k] = ed.settings[k];
+  const before = new Map(orig.players.map((p) => [p.id, p]));
+  const players = [], added = [];
+  for (const e of ed.players) {
+    const o = before.get(e.id);
+    if (!o) { added.push(e); continue; }
+    const fields = {}, profile = {};
+    for (const k of PLAYER_FIELDS) if ((e[k] ?? '') !== (o[k] ?? '')) fields[k] = clean(k, e[k] ?? '');
+    for (const k in e.profile) if (e.profile[k] !== o.profile[k]) profile[k] = e.profile[k];
+    if (Object.keys(fields).length || Object.keys(profile).length || e.rebuy) players.push({ id: e.id, fields, profile, rebuy: e.rebuy });
+  }
+  const removed = orig.players.filter((o) => !ed.players.some((e) => e.id === o.id)).map((o) => o.id);
+  const order = ed.players.map((p) => p.id);
+  if (!Object.keys(settings).length && !players.length && !added.length && !removed.length && !ed.reset) return null;
+  return { settings, players, added, removed, order, reset: ed.reset };
+}
+
+function applyEdit(d, c) {
+  Object.assign(d.settings, c.settings);
+  if (d.settings.bb < d.settings.sb) d.settings.bb = d.settings.sb;
+  const byId = new Map(d.players.map((p) => [p.id, p]));
+  for (const ch of c.players) {
+    const p = byId.get(ch.id);
+    if (!p) continue; // someone else removed them meanwhile
+    Object.assign(p, ch.fields);
+    p.profile = { ...fullProfile(p), ...ch.profile };
+    p.stack += ch.rebuy;
+    p.bought += ch.rebuy;
+  }
+  for (const e of c.added) {
+    if (byId.has(e.id)) continue;
+    const p = newPlayer('Player', 'fish', 0);
+    Object.assign(p, { id: e.id, profile: e.profile, stack: e.stack + e.rebuy, bought: e.bought + e.rebuy });
+    for (const k of PLAYER_FIELDS) p[k] = clean(k, e[k] ?? '');
+    d.players.push(p);
+    byId.set(p.id, p);
+  }
+  // Players still sitting in an unfinished hand can't vanish mid-hand.
+  const live = new Set(d.hand && d.hand.phase !== 'done' ? d.hand.seats.map((st) => st.pid) : []);
+  d.players = d.players.filter((p) => !c.removed.includes(p.id) || live.has(p.id));
+  // Keep this person's ordering for the players they saw; anyone added elsewhere stays at the end.
+  const rank = new Map(c.order.map((id, i) => [id, i]));
+  d.players.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+  if (d.hand) for (const st of d.hand.seats) { const p = byId.get(st.pid); if (p) st.name = p.name; }
+  if (c.reset) {
+    for (const p of d.players) {
+      p.stack = d.settings.buyIn; p.bought = d.settings.buyIn;
+      p.stats = { hands: 0, vpip: 0, pfr: 0, wins: 0, biggest: 0 };
+    }
+    d.history = [];
+    d.track = [];
+    d.hand = null;
+    d.undo = [];
+  }
+}
+
 function openEditor() {
   if (!state) return;
   const inHand = new Set(state.hand && state.hand.phase !== 'done' ? state.hand.seats.map((s) => s.pid) : []);
@@ -622,6 +717,8 @@ function openEditor() {
     players: state.players.map((p) => ({ ...p, profile: fullProfile(p), rebuy: 0 })),
     reset: false,
   };
+  // What the table looked like when the dialog opened, so Save only sends what you changed.
+  const orig = structuredClone({ settings: ed.settings, players: ed.players });
   const dlg = $('#editor');
 
   const traitRow = (p, t) => `<label class="trait">
@@ -820,39 +917,11 @@ function openEditor() {
     const S = ed.settings;
     if (S.bb < S.sb) S.bb = S.sb;
     if (ed.players.filter((p) => !p.out).length < 2) toast('Heads up: fewer than two players are seated.');
-    mutate((d) => {
-      d.settings = S;
-      const byId = new Map(d.players.map((p) => [p.id, p]));
-      const keep = [];
-      for (const e of ed.players) {
-        const cur = byId.get(e.id);
-        if (!cur && !e.isNew) continue; // removed by someone else meanwhile
-        const p = cur || newPlayer(e.name, 'fish', 0);
-        if (!cur) { p.id = e.id; p.stack = 0; p.bought = 0; }
-        Object.assign(p, {
-          name: e.name.trim() || 'Player', preset: e.preset, profile: e.profile, out: e.out,
-          emoji: (e.emoji || '').trim(), avatar: e.avatar || '', label: (e.label || '').trim(), tagline: (e.tagline || '').trim(),
-        });
-        p.stack += e.rebuy + (cur ? 0 : e.stack);
-        p.bought += e.rebuy + (cur ? 0 : e.bought);
-        keep.push(p);
-      }
-      // Players still sitting in an unfinished hand can't vanish mid-hand.
-      const live = d.hand && d.hand.phase !== 'done' ? d.hand.seats.map((st) => st.pid) : [];
-      for (const pid of live) if (!keep.some((p) => p.id === pid) && byId.get(pid)) keep.push(byId.get(pid));
-      d.players = keep;
-      if (d.hand) for (const st of d.hand.seats) { const p = byId.get(st.pid); if (p) st.name = p.name; }
-      if (ed.reset) {
-        for (const p of d.players) {
-          p.stack = S.buyIn; p.bought = S.buyIn;
-          p.stats = { hands: 0, vpip: 0, pfr: 0, wins: 0, biggest: 0 };
-        }
-        d.history = [];
-        d.track = [];
-        d.hand = null;
-        d.undo = [];
-      }
-    });
+    const change = editorDiff(orig, ed);
+    if (!change) return;
+    // Applied to whatever the latest table is, and re-applied if someone else saved first,
+    // so two people editing different things both keep their changes.
+    mutate((d) => applyEdit(d, change), { rebase: true });
   };
   draw();
   dlg.returnValue = '';

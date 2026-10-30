@@ -92,7 +92,9 @@ secrets `CLOUDFLARE_API_TOKEN` (template "Edit Cloudflare Workers") and
 The table — players, bankrolls, the current hand, its log and undo stack — is one JSON blob.
 Whoever clicks a button computes the next state in their browser and shows it straight away, then
 writes it in the background with `If-Match: <etag>`. If someone else wrote first, the server answers
-412, the page reloads their version and says so. Odds aren't stored: every viewer works them out in
+412 and the page reloads their version. Table edits (names, personalities, settings, buy-ins)
+only send the fields you changed and are replayed on top of the newer version, so two people editing
+at once both keep their changes; game moves give way, so two clicks on "next" never play two steps. Odds aren't stored: every viewer works them out in
 a Web Worker, equity first and then the personality playouts in batches, so the bars fill in live
 without ever blocking the page. Everyone else polls with
 `If-None-Match`, so unchanged polls are cheap 304s.
