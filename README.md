@@ -13,6 +13,7 @@ card while the odds update.
 - 2–9 players, each with a personality: presets (Fish, Calling station, Nit, TAG, LAG, Maniac,
   Pot-odds grinder, Hero caller) or custom sliders for **hands played, aggression, bluff frequency,
   chasing draws, odds needed to call** (as a multiple of pot odds) and **hero-call tendency**.
+  Give anyone their own emoji, label and tagline ("🍺 Drunk uncle — shoves after midnight").
 - Blinds, buy-ins, auto-rebuys; tracks stack, total bought in, net, VPIP/PFR, hands won.
 - Two odds per player, updated after every action:
   - **Equity** — chance to win if everyone still in sees all five cards (exact on flop/turn).
@@ -21,7 +22,7 @@ card while the odds update.
 - Step one action at a time, finish a street, auto-play, or **decide for a player yourself**
   ("what if Ben had called?"). Undo any step. Click any visible card to swap it for another.
 - "Sim 10 hands" fast-forwards a session to watch the bankrolls move.
-- Keyboard: <kbd>Space</kbd>/<kbd>→</kbd> next step, <kbd>U</kbd> undo.
+- Keyboard: <kbd>Space</kbd>/<kbd>→</kbd> next step, <kbd>F</kbd> finish street, <kbd>A</kbd> auto-play, <kbd>U</kbd> undo.
 
 The bots only know their own cards and the board — like real players. Personalities are heuristics,
 not a solver: the fun is in seeing a fish call off with bottom pair while the nit folds the winner.
@@ -78,9 +79,11 @@ secrets `CLOUDFLARE_API_TOKEN` (template "Edit Cloudflare Workers") and
 ## How syncing works
 
 The table — players, bankrolls, the current hand, its log and undo stack — is one JSON blob.
-Whoever clicks a button computes the next state in their browser (bots and odds run client-side,
-odds in a Web Worker), then writes it with `If-Match: <etag>`. If someone else wrote first, the
-server answers 412, the page reloads their version and says so. Everyone else polls with
+Whoever clicks a button computes the next state in their browser and shows it straight away, then
+writes it in the background with `If-Match: <etag>`. If someone else wrote first, the server answers
+412, the page reloads their version and says so. Odds aren't stored: every viewer works them out in
+a Web Worker, equity first and then the personality playouts in batches, so the bars fill in live
+without ever blocking the page. Everyone else polls with
 `If-None-Match`, so unchanged polls are cheap 304s.
 
 ## Files
@@ -88,6 +91,7 @@ server answers 412, the page reloads their version and says so. Everyone else po
 ```
 site/index.html, css/style.css
 site/js/app.js          UI, controls, editor dialogs
+site/js/morph.js        patches the page in place so only what changed moves
 site/js/engine.js       hold'em rules: blinds, betting rounds, side pots, showdown
 site/js/bots.js         personalities + the decision model
 site/js/odds.js         equity + personality-aware playouts (also run in odds-worker.js)

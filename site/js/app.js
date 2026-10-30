@@ -4,8 +4,9 @@ import {
   createTable, startHand, step, profilesFor, potTotal, legal, applyAction,
   pushUndo, swapCard, newPlayer, streetName,
 } from './engine.js';
-import { PRESETS, TRAITS, presetInfo } from './bots.js';
-import { RANKS, SUIT_SYMBOLS, SUIT_NAMES, cardLabel } from './cards.js';
+import { PRESETS, TRAITS, presetInfo, preflopTop } from './bots.js';
+import { RANKS, SUIT_SYMBOLS, SUIT_NAMES, cardLabel, describeScore, evaluate } from './cards.js';
+import { morph } from './morph.js';
 import { computeOdds as computeOddsHere } from './odds.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -20,102 +21,146 @@ const lsSet = (k, v) => { try { localStorage.setItem(`fp:${k}`, v); } catch { /*
 const ui = {
   tab: lsGet('tab', 'odds'),
   speed: +lsGet('speed', 900),
-  busy: false,
-  computing: false,
   auto: false,
-  preview: null,
   raiseKey: null,
   raiseTo: 0,
+  odds: { key: undefined },
+  prevOdds: null,
+  trail: { no: null, rows: {} },
 };
 const avatars = new Set();
 let store, state = null;
 
+const EMOJI_PICKS = ['🍺', '🦈', '🐢', '🤡', '👑', '🎩', '🐍', '🧊', '💎', '🌶️', '🎲', '🃏', '🤠', '👻', '🦊', '🐻', '🧠', '💸', '😎', '🥶', '🍀', '🐙'];
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 
 // ---------- odds (in a worker so the page stays smooth) ----------
+// Every viewer computes odds for what's on screen; they're never written to the shared blob,
+// so a slow calculation can't hold up a click or collide with someone else's move.
 
 let worker = null, reqId = 0;
-const waiting = new Map();
 
-function oddsFor(hand, profiles) {
-  if (!hand || hand.phase === 'done') return Promise.resolve(null);
+function oddsKey(s) {
+  const h = s.hand;
+  if (!h || h.phase === 'done') return null;
+  return JSON.stringify([h.no, h.shown, h.phase, h.toAct, h.board5, h.curBet, h.raises, h.aggressor,
+    h.seats.map((x) => [x.hole, x.folded, x.allIn, x.stack, x.bet, x.total, x.acted]), profilesFor(s)]);
+}
+
+function onOdds(id, odds, done) {
+  if (id !== ui.odds.id) return;
+  ui.odds.o = odds;
+  ui.odds.done = done;
+  if (done) recordTrail(ui.odds);
+  render();
+}
+
+function ensureOdds(s) {
+  const key = oddsKey(s);
+  if (key === ui.odds.key) return;
+  if (ui.odds.o && ui.odds.no === s.hand?.no) ui.prevOdds = { no: ui.odds.no, o: ui.odds.o };
+  const id = ++reqId;
+  ui.odds = { key, id, no: s.hand?.no, street: s.hand?.street, o: null, done: false };
+  if (!key) return;
+  const hand = { ...s.hand, log: null, odds: null };
+  const profiles = profilesFor(s);
   try {
     if (!worker) {
       worker = new Worker(new URL('./odds-worker.js', import.meta.url), { type: 'module' });
-      worker.onmessage = (e) => {
-        const w = waiting.get(e.data.id);
-        waiting.delete(e.data.id);
-        w?.resolve(e.data.odds);
-      };
-      worker.onerror = () => {
-        worker = null;
-        for (const [id, w] of waiting) { waiting.delete(id); w.resolve(computeOddsHere(w.hand, w.profiles)); }
-      };
+      worker.onmessage = (e) => onOdds(e.data.id, e.data.odds, e.data.done);
+      worker.onerror = () => { worker = false; ui.odds.key = null; render(); };
     }
-    const id = ++reqId;
-    return new Promise((resolve) => {
-      waiting.set(id, { resolve, hand, profiles });
-      worker.postMessage({ id, hand, profiles });
-    });
+    if (worker === false) throw new Error('no worker');
+    worker.postMessage({ id, hand, profiles });
   } catch {
-    return Promise.resolve(computeOddsHere(hand, profiles));
+    setTimeout(() => onOdds(id, { ...computeOddsHere(hand, profiles), n: 400 }, true), 0);
   }
 }
 
+// Odds to draw: this situation's (possibly still converging), else the last ones from this
+// hand, dimmed, so bars glide to the new values instead of blinking out.
+function oddsView(s) {
+  const h = s.hand;
+  if (!h || h.phase === 'done') return { o: null };
+  if (ui.odds.o) return { o: ui.odds.o, pending: !ui.odds.done };
+  if (ui.prevOdds?.no === h.no) return { o: ui.prevOdds.o, pending: true, stale: true };
+  return { o: null, pending: true };
+}
+
+const TRAIL_LABEL = ['PF', 'F', 'T', 'R'];
+function recordTrail(r) {
+  if (ui.trail.no !== r.no) ui.trail = { no: r.no, rows: {} };
+  const label = TRAIL_LABEL[r.street];
+  if (label && !ui.trail.rows[label]) ui.trail.rows[label] = r.o.win;
+}
+
 // ---------- sync ----------
+// Clicks apply instantly to the local copy; a single queue writes the latest state and polls,
+// so network round-trips never block the buttons.
+
+let netChain = Promise.resolve();
+const net = (fn) => (netChain = netChain.then(fn).catch((e) => console.warn(e)));
+let dirty = false;
 
 function setSync(kind, text) {
   $('#sync').className = `sync ${kind}`;
   $('#sync-text').textContent = text;
 }
+const syncOk = () => setSync(store.label === 'online' ? 'ok' : 'local', store.label === 'online' ? 'Live' : 'Local only');
+
+async function lostRace() {
+  dirty = false;
+  toast('Someone else moved first — synced to their version.');
+  const s = await store.load().catch(() => null);
+  if (s) { state = s; render(); }
+}
+
+const flush = () => net(async () => {
+  while (dirty) {
+    dirty = false;
+    try {
+      await store.save(state);
+      syncOk();
+    } catch (e) {
+      if (e instanceof ConflictError) return lostRace();
+      dirty = true;
+      setSync('err', 'Offline — will retry');
+      return;
+    }
+  }
+});
+
+const pollOnce = () => net(async () => {
+  if (dirty) return;
+  const s = await store.poll();
+  if (s && dirty) return lostRace(); // they wrote while we were mid-click
+  if (s) { state = s; render(); }
+  syncOk();
+}).catch(() => setSync('err', 'Offline — retrying'));
 
 async function pollLoop() {
   for (;;) {
     await sleep(document.hidden ? POLL_MS * 4 : POLL_MS);
-    if (ui.busy) continue;
     try {
-      const s = await store.poll();
-      if (s && !ui.busy) { state = s; render(); }
-      setSync(store.label === 'online' ? 'ok' : 'local', store.label === 'online' ? 'Live' : 'Local only');
+      if (dirty) await flush(); else await pollOnce();
     } catch {
       setSync('err', 'Offline — retrying');
     }
   }
 }
 
-// Apply a change to a copy of the state, recompute odds, write it to the shared blob.
-async function mutate(fn, { odds = true } = {}) {
-  if (ui.busy || !state) return false;
-  ui.busy = true;
-  try {
-    const draft = structuredClone(state);
-    if (fn(draft) === false) return false;
-    if (odds && draft.hand) {
-      ui.preview = draft;
-      ui.computing = true;
-      render();
-      draft.hand.odds = await oddsFor(draft.hand, profilesFor(draft));
-    }
-    draft.rev = (draft.rev || 0) + 1;
-    draft.updatedAt = Date.now();
-    await store.save(draft);
-    state = draft;
-    return true;
-  } catch (e) {
-    if (e instanceof ConflictError) {
-      toast('Someone else moved first — synced to their version.');
-      const s = await store.load().catch(() => null);
-      if (s) state = s;
-    } else {
-      toast(`Couldn't save: ${e.message}`);
-    }
-    return false;
-  } finally {
-    ui.busy = false;
-    ui.computing = false;
-    ui.preview = null;
-    render();
-  }
+// Apply a change to a copy of the state, show it right away, write it in the background.
+function mutate(fn) {
+  if (!state) return false;
+  const draft = structuredClone(state);
+  if (fn(draft) === false) return false;
+  draft.rev = (draft.rev || 0) + 1;
+  draft.updatedAt = Date.now();
+  state = draft;
+  dirty = true;
+  render();
+  flush();
+  return true;
 }
 
 // ---------- actions ----------
@@ -140,8 +185,7 @@ const act = {
     ui.auto = true;
     render();
     while (ui.auto && state?.hand && state.hand.phase !== 'done') {
-      const ok = await act.next();
-      if (!ok) break;
+      if (!act.next()) break;
       await sleep(ui.speed);
     }
     ui.auto = false;
@@ -150,7 +194,7 @@ const act = {
   undo: () => mutate((d) => {
     if (!d.undo.length) return false;
     d.hand = JSON.parse(d.undo.pop());
-  }, { odds: false }),
+  }),
   newHand: () => {
     const h = state?.hand;
     if (h && h.phase !== 'done' && !confirm('Abandon this hand? Everyone gets their chips back.')) return;
@@ -163,7 +207,7 @@ const act = {
       let guard = 0;
       while (d.hand.phase !== 'done' && guard++ < 400) step(d.hand, pr);
     }
-  }, { odds: false }),
+  }),
   decide(a) {
     const to = a === 'raise' ? +($('#raise-to')?.value || 0) : 0;
     mutate((d) => {
@@ -180,71 +224,95 @@ function newHand(d) {
 }
 
 // ---------- rendering ----------
+// Everything renders to HTML strings and is morphed into place (morph.js), so only what
+// changed is touched: cards that were already out don't re-deal, bars and numbers glide.
 
 const playerById = (s, id) => s.players.find((p) => p.id === id);
 
+function infoOf(p) {
+  const base = presetInfo(p?.preset);
+  return { emoji: p?.emoji || base.emoji, name: p?.label || base.name, desc: p?.tagline || base.desc };
+}
+
 function cardHtml(c, { big = false, edit = false, dim = false } = {}) {
   const r = RANKS[c >> 2] === 'T' ? '10' : RANKS[c >> 2];
-  return `<button class="card s${c & 3}${big ? ' big' : ''}${dim ? ' dim' : ''}" ${edit ? `data-card="${c}"` : 'disabled'}
+  return `<button class="card s${c & 3}${big ? ' big' : ''}${dim ? ' dim' : ''}" data-key="c${c}" ${edit ? `data-card="${c}"` : 'disabled'}
     aria-label="${cardLabel(c)}" title="${edit ? 'Click to change this card' : cardLabel(c)}">
     <span class="r">${r}</span><span class="su">${SUIT_SYMBOLS[c & 3]}</span></button>`;
 }
-const backHtml = (big) => `<div class="card back${big ? ' big' : ''}"></div>`;
+const backHtml = (key, big) => `<div class="card back${big ? ' big' : ''}" data-key="${key}"></div>`;
 
 function avatarHtml(p) {
   const key = p?.preset in PRESETS ? p.preset : 'custom';
+  if (key === 'custom' && p?.emoji) return `<div class="avatar emoji" aria-hidden="true">${esc(p.emoji)}</div>`;
   if (avatars.has(key)) return `<img class="avatar" src="assets/avatars/${key}.jpg" alt="">`;
   const initials = (p?.name || '?').trim().slice(0, 2).toUpperCase();
   return `<div class="avatar initials">${esc(initials)}</div>`;
 }
 
-function seatHtml(s, h, st, k, n) {
+const moneyNum = (n) => `data-num="${Math.round(n)}"`;
+
+function madeHand(h, st) {
+  if (!h || st.folded || !st.hole) return '';
+  if (h.phase === 'done') return '';
+  if (h.shown >= 3) return describeScore(evaluate([...st.hole, ...h.board5.slice(0, h.shown)]));
+  const [a, b] = st.hole;
+  if (a >> 2 === b >> 2) return `Pocket ${RANKS[a >> 2] === 'T' ? '10' : RANKS[a >> 2]}s`;
+  return (a & 3) === (b & 3) ? 'Suited' : '';
+}
+
+function barsHtml(view, k, folded) {
+  const o = view.o;
+  const eq = o?.eq?.[k], win = o?.win?.[k];
+  const w = (x) => (x == null ? 0 : x * 100).toFixed(1);
+  return `<div class="bars${folded ? ' off' : ''}${view.pending ? ' pending' : ''}">
+    <div class="bar eq" title="Showdown equity: chance to win if every remaining player sees all five cards">
+      <i style="width:${w(eq)}%"></i><span>Equity</span><b>${eq == null || view.stale ? '…' : pct(eq)}</b></div>
+    <div class="bar win" title="Realistic win chance: the rest of the hand is simulated with each player's personality (folds, bluffs, bad calls)">
+      <i style="width:${w(win)}%"></i><span>Real win</span><b>${win == null || view.stale ? '…' : pct(win)}</b></div>
+  </div>`;
+}
+
+function seatHtml(s, h, st, k, n, view) {
   const ang = Math.PI / 2 + (k * 2 * Math.PI) / n;
   const x = 50 + 50 * Math.cos(ang);
   const y = 50 + 50 * Math.sin(ang);
   const p = st.player;
-  const info = presetInfo(p?.preset);
+  const info = infoOf(p);
   const editable = h && h.phase !== 'done';
   const cls = ['seat'];
-  let odds = '';
   if (h) {
     if (h.phase === 'bet' && h.toAct === k) cls.push('acting');
     if (st.folded) cls.push('folded');
     if (st.allIn && !st.folded) cls.push('allin');
     if (h.phase === 'done' && h.result?.pots.some((pt) => pt.winners.includes(k) && pt.amount > 0) && st.won > st.total) cls.push('winner');
-    const o = h.odds;
-    if (o && !st.folded) {
-      odds = `<div class="bars">
-        <div class="bar eq" title="Showdown equity: chance to win if every remaining player sees all five cards">
-          <i style="width:${(o.eq[k] * 100).toFixed(1)}%"></i><span>Equity</span><b>${pct(o.eq[k])}</b></div>
-        <div class="bar win" title="Realistic win chance: the rest of the hand is simulated with each player's personality (folds, bluffs, bad calls)">
-          <i style="width:${(o.win[k] * 100).toFixed(1)}%"></i><span>Real win</span><b>${pct(o.win[k])}</b></div>
-      </div>`;
-    }
   }
   const dealer = h ? h.btn === k : s.dealerId === st.pid;
   const cards = st.hole
     ? st.hole.map((c) => cardHtml(c, { edit: editable, dim: st.folded })).join('')
-    : backHtml() + backHtml();
+    : backHtml('b0') + backHtml('b1');
   const tags = [];
   if (h && h.sbI === k && h.street === 0) tags.push('SB');
   if (h && h.bbI === k && h.street === 0) tags.push('BB');
-  return `<div class="${cls.join(' ')}" style="--x:${x}%;--y:${y}%">
+  const last = st.allIn && !st.folded && h?.phase !== 'done' ? 'All-in' : st.last || '';
+  const made = madeHand(h, st);
+  return `<div class="${cls.join(' ')}" data-key="seat-${st.pid}" style="--x:${x}%;--y:${y}%">
     <div class="seat-head">
       ${avatarHtml(p)}
       <div class="who">
         <div class="name">${esc(st.name)}${dealer ? '<span class="dealer" title="Dealer button">D</span>' : ''}</div>
-        <div class="type" title="${esc(info.desc)}">${info.emoji} ${esc(info.name)}</div>
+        <div class="type" title="${esc(info.desc)}">${esc(info.emoji)} ${esc(info.name)}</div>
       </div>
     </div>
     <div class="hole">${cards}</div>
+    ${h ? `<div class="made">${esc(made)}</div>` : ''}
     <div class="money-row">
-      <span class="stack">${money(st.stack)}</span>
-      ${st.bet > 0 ? `<span class="bet">${money(st.bet)}</span>` : ''}
-      ${tags.map((t) => `<span class="tag">${t}</span>`).join('')}
+      <span class="stack" ${moneyNum(st.stack)}>${money(st.stack)}</span>
+      ${st.bet > 0 ? `<span class="bet" data-key="bet" ${moneyNum(st.bet)}>${money(st.bet)}</span>` : ''}
+      ${tags.map((t) => `<span class="tag" data-key="tag-${t}">${t}</span>`).join('')}
     </div>
-    <div class="last">${esc(st.allIn && !st.folded && h?.phase !== 'done' ? 'All-in' : st.last || '')}</div>
-    ${odds}
+    <div class="last-wrap"><div class="last" data-key="last-${esc(last)}">${esc(last)}</div></div>
+    ${h ? barsHtml(view, k, st.folded || h.phase === 'done') : ''}
   </div>`;
 }
 
@@ -253,35 +321,38 @@ function renderTable(s) {
   const seats = h
     ? h.seats.map((st) => ({ ...st, player: playerById(s, st.pid) }))
     : s.players.filter((p) => !p.out).map((p) => ({ pid: p.id, name: p.name, stack: p.stack, bet: 0, player: p }));
-  $('#seats').innerHTML = seats.map((st, k) => seatHtml(s, h, st, k, seats.length)).join('');
+  const view = oddsView(s);
+  morph($('#seats'), seats.map((st, k) => seatHtml(s, h, st, k, seats.length, view)).join(''));
   $('#table').dataset.n = seats.length;
 
   if (!h) {
-    $('#center').innerHTML = `<div class="idle"><div class="logo-word">Fantasy Poker</div>
-      <p>${seats.length} players seated · blinds ${money(s.settings.sb)}/${money(s.settings.bb)}</p></div>`;
+    morph($('#center'), `<div class="idle" data-key="idle"><div class="logo-word">Fantasy Poker</div>
+      <p>${seats.length} players seated · blinds ${money(s.settings.sb)}/${money(s.settings.bb)}</p>
+      <p class="hint">Press <kbd>Space</kbd> to deal</p></div>`);
     return;
   }
   const editable = h.phase !== 'done';
-  const board = [0, 1, 2, 3, 4].map((i) => (i < h.shown ? cardHtml(h.board5[i], { big: true, edit: editable }) : backHtml(true))).join('');
+  const board = [0, 1, 2, 3, 4].map((i) => (i < h.shown ? cardHtml(h.board5[i], { big: true, edit: editable }) : backHtml(`bk${i}`, true))).join('');
   const label = h.phase === 'done' ? (h.result?.showdown ? 'Showdown' : 'Hand over') : streetName(h.street);
-  $('#center').innerHTML = `
+  const pot = potTotal(h);
+  morph($('#center'), `
     <div class="street">Hand #${h.no} · ${label}</div>
-    <div class="board">${board}</div>
-    <div class="pot">Pot <b>${money(potTotal(h))}</b></div>
-    ${h.phase === 'done' && h.result ? `<div class="result">${esc(h.result.summary)}</div>` : ''}`;
+    <div class="board" data-key="board">${board}</div>
+    <div class="pot">Pot <b ${moneyNum(pot)}>${money(pot)}</b></div>
+    ${h.phase === 'done' && h.result ? `<div class="result" data-key="result-${h.no}">${esc(h.result.summary)}</div>` : ''}`);
 }
 
 function renderControls(s) {
   const h = s.hand;
-  const dis = ui.busy || ui.auto ? 'disabled' : '';
+  const dis = ui.auto ? 'disabled' : '';
   const nextLabel = !h || h.phase === 'done' ? (h ? 'Next hand' : 'Deal first hand')
     : h.phase === 'deal' ? `Deal the ${['flop', 'turn', 'river'][h.street]}`
     : `${esc(h.seats[h.toAct].name)} acts`;
   const live = h && h.phase !== 'done';
   let html = `<div class="row main">
-    <button class="btn primary big" data-act="next" ${dis} title="Shortcut: space">▶ ${nextLabel}</button>
-    ${live && h.phase === 'bet' ? `<button class="btn" data-act="street" ${dis}>⏭ Finish ${streetName(h.street).toLowerCase()}</button>` : ''}
-    ${live ? `<button class="btn ${ui.auto ? 'stop' : ''}" data-act="auto" ${ui.busy && !ui.auto ? 'disabled' : ''}>${ui.auto ? '■ Stop' : '⏯ Auto-play hand'}</button>` : ''}
+    <button class="btn primary big" data-act="next" ${dis} title="Shortcut: Space">▶ ${nextLabel}</button>
+    ${live && h.phase === 'bet' ? `<button class="btn" data-act="street" ${dis} title="Shortcut: F">⏭ Finish ${streetName(h.street).toLowerCase()}</button>` : ''}
+    ${live ? `<button class="btn ${ui.auto ? 'stop' : ''}" data-act="auto" title="Shortcut: A">${ui.auto ? '■ Stop' : '⏯ Auto-play hand'}</button>` : ''}
     ${!live ? `<button class="btn" data-act="forward" ${dis} title="Play 10 hands instantly">⏩ Sim 10 hands</button>` : ''}
     <button class="btn ghost" data-act="undo" ${dis || !s.undo?.length ? 'disabled' : ''} title="Shortcut: U">↶ Undo</button>
     <span class="spacer"></span>
@@ -289,7 +360,6 @@ function renderControls(s) {
     <label class="speed">Speed <select id="speed">
       ${[[1600, 'Slow'], [900, 'Normal'], [400, 'Fast']].map(([v, l]) => `<option value="${v}" ${ui.speed === v ? 'selected' : ''}>${l}</option>`).join('')}
     </select></label>
-    ${ui.computing ? '<span class="thinking">calculating odds…</span>' : ''}
   </div>`;
 
   if (live && h.phase === 'bet') {
@@ -315,7 +385,13 @@ function renderControls(s) {
         </span>` : ''}
     </div>`;
   }
-  $('#controls').innerHTML = html;
+  morph($('#controls'), html);
+}
+
+function trailHtml(no, i) {
+  if (ui.trail.no !== no) return '';
+  const parts = TRAIL_LABEL.filter((l) => ui.trail.rows[l]).map((l) => `${l} ${pct(ui.trail.rows[l][i])}`);
+  return parts.length > 1 ? `<div class="trail">${parts.join(' → ')}</div>` : '';
 }
 
 function oddsPanel(s) {
@@ -324,26 +400,30 @@ function oddsPanel(s) {
   if (h.phase === 'done') {
     return `<div class="result-card">${esc(h.result?.summary || '')}</div>
       ${h.result?.showdown ? `<table class="grid"><tr><th>Player</th><th>Hand</th><th>Result</th></tr>
-      ${h.seats.map((st) => `<tr class="${st.folded ? 'folded' : ''}"><td>${esc(st.name)}</td><td>${st.folded ? 'folded' : esc(st.last)}</td>
+      ${h.seats.map((st, i) => `<tr class="${st.folded ? 'folded' : ''}"><td>${esc(st.name)}${trailHtml(h.no, i)}</td><td>${st.folded ? 'folded' : esc(st.last)}</td>
         <td class="${st.won - st.total > 0 ? 'pos' : st.total > 0 ? 'neg' : ''}">${signed(st.won - st.total)}</td></tr>`).join('')}</table>` : ''}`;
   }
-  const o = h.odds;
+  const { o, pending, stale } = oddsView(s);
   if (!o) return '<p class="empty">Calculating…</p>';
-  const rows = h.seats.map((st, i) => ({ st, i })).sort((a, b) => (b.st.folded ? -1 : o.win[b.i]) - (a.st.folded ? -1 : o.win[a.i]));
-  return `<table class="grid odds ${ui.computing ? 'stale' : ''}">
+  const winOf = (i) => o.win?.[i] ?? o.eq[i];
+  const rows = h.seats.map((st, i) => ({ st, i })).sort((a, b) => (b.st.folded ? -1 : winOf(b.i)) - (a.st.folded ? -1 : winOf(a.i)));
+  const val = (x) => (x == null || stale ? '…' : pct(x));
+  return `<table class="grid odds ${stale ? 'stale' : ''}">
     <tr><th>Player</th><th>Cards</th><th title="Chance to win if everyone still in sees all five cards">Equity</th>
       <th title="Chance to win with the rest of the hand played out by each personality">Real win</th>
       <th title="Chance this player folds before the hand ends">Folds</th></tr>
-    ${rows.map(({ st, i }) => `<tr class="${st.folded ? 'folded' : ''}">
-      <td>${esc(st.name)}</td>
-      <td class="mini-cards">${st.hole.map((c) => `<span class="s${c & 3}">${cardLabel(c)}</span>`).join(' ')}</td>
-      <td>${st.folded ? '—' : pct(o.eq[i])}</td>
-      <td><b>${st.folded ? 'folded' : pct(o.win[i])}</b></td>
-      <td>${st.folded ? '' : pct(o.fold[i])}</td></tr>`).join('')}
+    ${rows.map(({ st, i }) => `<tr class="${st.folded ? 'folded' : ''}" data-key="r${st.pid}">
+      <td>${esc(st.name)}${trailHtml(h.no, i)}</td>
+      <td class="mini-cards">${st.hole.map((c) => `<span class="s${c & 3}">${cardLabel(c)}</span>`).join(' ')}
+        <div class="made-mini">${esc(madeHand(h, st))}</div></td>
+      <td>${st.folded ? '—' : val(o.eq[i])}</td>
+      <td><b>${st.folded ? 'folded' : val(o.win?.[i])}</b></td>
+      <td>${st.folded ? '' : val(o.fold?.[i])}</td></tr>`).join('')}
   </table>
   <p class="note"><b>Equity</b> assumes everyone still in goes to showdown. <b>Real win</b> plays the rest of the
   hand out hundreds of times using each player's personality — who'd fold, who'd bluff, who'd call — so a strong hand
-  held by a nit facing a maniac can be worth less than its equity. <span class="muted">(${o.ms ?? '?'} ms)</span></p>`;
+  held by a nit facing a maniac can be worth less than its equity.
+  <span class="muted">${pending ? 'Running playouts…' : o.n ? `${o.n} playouts · ${o.ms} ms` : ''}</span></p>`;
 }
 
 function logPanel(s) {
@@ -362,8 +442,8 @@ function moneyPanel(s) {
   const per = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
   return `<table class="grid money">
     <tr><th>Player</th><th>Stack</th><th>Bought in</th><th>Net</th><th title="Voluntarily put money in pot">VPIP</th><th title="Preflop raise">PFR</th><th>Won</th></tr>
-    ${rows.map(({ p, stack, net }) => `<tr class="${p.out ? 'folded' : ''}">
-      <td>${presetInfo(p.preset).emoji} ${esc(p.name)}</td><td>${money(stack)}</td><td>${money(p.bought)}</td>
+    ${rows.map(({ p, stack, net }) => `<tr class="${p.out ? 'folded' : ''}" data-key="m${p.id}">
+      <td title="${esc(infoOf(p).desc)}">${esc(infoOf(p).emoji)} ${esc(p.name)}</td><td ${moneyNum(stack)}>${money(stack)}</td><td>${money(p.bought)}</td>
       <td class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}"><b>${signed(net)}</b></td>
       <td>${per(p.stats.vpip, p.stats.hands)}</td><td>${per(p.stats.pfr, p.stats.hands)}</td>
       <td>${p.stats.wins}/${p.stats.hands}</td></tr>`).join('')}
@@ -381,17 +461,28 @@ function renderPanel(s) {
   const f = { odds: oddsPanel, log: logPanel, money: moneyPanel, history: historyPanel }[ui.tab] || oddsPanel;
   const panel = $('#panel');
   const atBottom = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 20;
-  panel.innerHTML = f(s);
+  if (panel.dataset.tab !== ui.tab) { panel.dataset.tab = ui.tab; panel.innerHTML = ''; }
+  morph(panel, f(s));
   if (ui.tab === 'log' && atBottom) panel.scrollTop = panel.scrollHeight;
 }
 
+// Batched to one paint per frame: worker progress and clicks can arrive in bursts.
+// (The timeout covers windows where the browser throttles animation frames.)
+let frameQueued = false;
 function render() {
-  const s = ui.preview || state;
-  if (!s) return;
-  document.body.classList.toggle('computing', ui.computing);
-  renderTable(s);
-  renderControls(s);
-  renderPanel(s);
+  if (frameQueued) return;
+  frameQueued = true;
+  const run = () => {
+    if (!frameQueued) return;
+    frameQueued = false;
+    if (!state) return;
+    ensureOdds(state);
+    renderTable(state);
+    renderControls(state);
+    renderPanel(state);
+  };
+  requestAnimationFrame(run);
+  setTimeout(run, 60);
 }
 
 let toastTimer;
@@ -455,7 +546,7 @@ function openEditor() {
       <input class="name-in" data-f="name" value="${esc(p.name)}" maxlength="16" aria-label="Name">
       <select data-f="preset" aria-label="Personality">
         ${Object.entries(PRESETS).map(([k, v]) => `<option value="${k}" ${p.preset === k ? 'selected' : ''}>${v.emoji} ${v.name}</option>`).join('')}
-        <option value="custom" ${p.preset in PRESETS ? '' : 'selected'}>🎛️ Custom</option>
+        <option value="custom" ${p.preset in PRESETS ? '' : 'selected'}>${esc(p.emoji || '🎛️')} Custom</option>
       </select>
       <button type="button" class="btn small ghost" data-x="tune">Tune ▾</button>
       <span class="ed-money">${money(p.stack + p.rebuy)} <span class="muted">· in for ${money(p.bought + p.rebuy)}</span></span>
@@ -464,14 +555,19 @@ function openEditor() {
       <button type="button" class="btn small ghost danger" data-x="remove" ${inHand.has(p.id) ? 'disabled title="In the current hand"' : ''} aria-label="Remove">✕</button>
     </div>
     <div class="tune" ${p.open ? '' : 'hidden'}>
-      <p class="muted">${esc(presetInfo(p.preset).desc)}</p>
+      <div class="identity">
+        <label class="id-emoji">Emoji <input data-f="emoji" value="${esc(p.emoji || '')}" placeholder="${presetInfo(p.preset).emoji}" maxlength="8"></label>
+        <label class="id-label">Label <input data-f="label" value="${esc(p.label || '')}" placeholder="${esc(presetInfo(p.preset).name)}" maxlength="24"></label>
+        <label class="id-tag">Tagline <input data-f="tagline" value="${esc(p.tagline || '')}" placeholder="${esc(presetInfo(p.preset).desc)}" maxlength="90"></label>
+        <div class="emoji-picks">${EMOJI_PICKS.map((em) => `<button type="button" class="pick${p.emoji === em ? ' on' : ''}" data-x="emoji" data-v="${em}">${em}</button>`).join('')}</div>
+      </div>
       ${TRAITS.map((t) => traitRow(p, t)).join('')}
     </div>
   </div>`;
 
   const draw = () => {
     const S = ed.settings;
-    dlg.innerHTML = `<form method="dialog" class="editor">
+    morph(dlg, `<form method="dialog" class="editor">
       <h2>Table setup</h2>
       <div class="settings">
         <label>Small blind <input type="number" min="1" data-s="sb" value="${S.sb}"></label>
@@ -488,7 +584,7 @@ function openEditor() {
         <button class="btn ghost" value="cancel">Cancel</button>
         <button class="btn primary" value="save">Save</button>
       </div>
-    </form>`;
+    </form>`);
   };
 
   dlg.oninput = (e) => {
@@ -502,9 +598,16 @@ function openEditor() {
     const p = ed.players[+row.dataset.i];
     if (el.dataset.f === 'name') p.name = el.value.slice(0, 16);
     if (el.dataset.f === 'out') p.out = el.checked;
+    if (['emoji', 'label', 'tagline'].includes(el.dataset.f)) {
+      p[el.dataset.f] = el.value;
+      if (el.dataset.f === 'emoji') draw();
+    }
     if (el.dataset.f === 'preset') {
       p.preset = el.value;
-      if (PRESETS[el.value]) p.profile = { ...PRESETS[el.value].profile };
+      if (PRESETS[el.value]) {
+        p.profile = { ...PRESETS[el.value].profile };
+        p.emoji = p.label = p.tagline = ''; // a preset brings its own identity
+      }
       p.open = true;
       draw();
     }
@@ -522,6 +625,7 @@ function openEditor() {
     const row = e.target.closest('.ed-player');
     const p = row && ed.players[+row.dataset.i];
     if (x === 'tune') p.open = !p.open;
+    if (x === 'emoji') p.emoji = p.emoji === e.target.dataset.v ? '' : e.target.dataset.v;
     if (x === 'rebuy') p.rebuy += ed.settings.buyIn;
     if (x === 'remove') ed.players.splice(+row.dataset.i, 1);
     if (x === 'add' && ed.players.length < 9) {
@@ -546,7 +650,10 @@ function openEditor() {
         if (!cur && !e.isNew) continue; // removed by someone else meanwhile
         const p = cur || newPlayer(e.name, 'fish', 0);
         if (!cur) { p.id = e.id; p.stack = 0; p.bought = 0; }
-        Object.assign(p, { name: e.name.trim() || 'Player', preset: e.preset, profile: e.profile, out: e.out });
+        Object.assign(p, {
+          name: e.name.trim() || 'Player', preset: e.preset, profile: e.profile, out: e.out,
+          emoji: (e.emoji || '').trim(), label: (e.label || '').trim(), tagline: (e.tagline || '').trim(),
+        });
         p.stack += e.rebuy + (cur ? 0 : e.stack);
         p.bought += e.rebuy + (cur ? 0 : e.bought);
         keep.push(p);
@@ -565,7 +672,7 @@ function openEditor() {
         d.hand = null;
         d.undo = [];
       }
-    }, { odds: true });
+    });
   };
   draw();
   dlg.returnValue = '';
@@ -588,7 +695,7 @@ $('#controls').addEventListener('input', (e) => {
 });
 $('#table').addEventListener('click', (e) => {
   const c = e.target.closest('[data-card]');
-  if (c && !ui.busy && !ui.auto) openPicker(+c.dataset.card);
+  if (c && !ui.auto) openPicker(+c.dataset.card);
 });
 $('#tabs').addEventListener('click', (e) => {
   const t = e.target.closest('[data-tab]');
@@ -601,12 +708,14 @@ $('#edit-table').addEventListener('click', openEditor);
 document.addEventListener('keydown', (e) => {
   if (e.target.closest('input, select, textarea, dialog') || e.metaKey || e.ctrlKey) return;
   if (e.key === ' ' || e.key === 'ArrowRight') { e.preventDefault(); if (!ui.auto) act.next(); }
-  if (e.key === 'u' && !ui.auto) act.undo();
+  const k = e.key.toLowerCase();
+  if (k === 'u' && !ui.auto) act.undo();
+  if (k === 'f' && !ui.auto) act.street();
+  if (k === 'a') act.auto();
 });
 document.addEventListener('visibilitychange', async () => {
-  if (document.hidden || ui.busy || !store) return;
-  const s = await store.poll().catch(() => null);
-  if (s) { state = s; render(); }
+  if (document.hidden || !store) return;
+  pollOnce();
 });
 
 for (const key of [...Object.keys(PRESETS), 'custom']) {
@@ -627,12 +736,14 @@ async function init() {
       }
     }
     state = s;
-    setSync(store.label === 'online' ? 'ok' : 'local', store.label === 'online' ? 'Live' : 'Local only');
+    syncOk();
     render();
   } catch (e) {
     setSync('err', `Can't reach table: ${e.message}`);
   }
   pollLoop();
+  // The bots' preflop chart takes a moment to build; do it before the first click needs it.
+  (window.requestIdleCallback || setTimeout)(() => preflopTop([48, 52 - 8]));
 }
 
 init();

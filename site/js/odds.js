@@ -48,10 +48,11 @@ export function showdownEquity(h) {
   return eq.map((v) => v / total);
 }
 
-export function realisticOdds(h, profiles, iters = 400) {
+// Plays the rest of the hand out `iters` times with the bots' personalities, adding into `acc`
+// (so the work can be done in batches and shown as it converges).
+export function realisticBatch(h, profiles, iters, acc) {
   const n = h.seats.length;
-  const win = new Array(n).fill(0);
-  const fold = new Array(n).fill(0);
+  if (!acc) acc = { win: new Array(n).fill(0), fold: new Array(n).fill(0), n: 0 };
   const deck = remainingDeck(knownCards(h));
   for (let it = 0; it < iters; it++) {
     shuffle(deck);
@@ -65,20 +66,28 @@ export function realisticOdds(h, profiles, iters = 400) {
       if (sim.phase === 'deal') dealNext(sim);
       else applyAction(sim, botAction(sim, profiles));
     }
+    acc.n++;
     if (!sim.result) continue;
     const w = sim.result.mainWinners;
-    for (const i of w) win[i] += 1 / w.length;
-    sim.seats.forEach((s, i) => { if (s.folded && !h.seats[i].folded) fold[i]++; });
+    for (const i of w) acc.win[i] += 1 / w.length;
+    sim.seats.forEach((s, i) => { if (s.folded && !h.seats[i].folded) acc.fold[i]++; });
   }
-  return { win: win.map((v) => v / iters), fold: fold.map((v) => v / iters) };
+  return acc;
+}
+
+export const accOdds = (acc) => ({ win: acc.win.map((v) => v / acc.n), fold: acc.fold.map((v) => v / acc.n) });
+
+// Once nobody can bet any more, realistic odds are just equity.
+export const needsPlayouts = (h) => h.phase === 'bet' || h.seats.filter((s) => !s.folded && !s.allIn).length >= 2;
+
+export function realisticOdds(h, profiles, iters = 400) {
+  return accOdds(realisticBatch(h, profiles, iters));
 }
 
 export function computeOdds(h, profiles) {
   if (!h || h.phase === 'done') return null;
   const t0 = Date.now();
   const eq = showdownEquity(h);
-  const canAct = h.seats.filter((s) => !s.folded && !s.allIn).length;
-  // Once nobody can bet any more, realistic odds are just equity.
-  const real = h.phase === 'bet' || canAct >= 2 ? realisticOdds(h, profiles, h.street === 0 ? 300 : 400) : { win: eq, fold: eq.map(() => 0) };
+  const real = needsPlayouts(h) ? realisticOdds(h, profiles, h.street === 0 ? 300 : 400) : { win: eq, fold: eq.map(() => 0) };
   return { eq, win: real.win, fold: real.fold, ms: Date.now() - t0 };
 }
