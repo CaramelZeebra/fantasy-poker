@@ -29,6 +29,7 @@ const ui = {
   prevOdds: null,
   trail: { no: null, rows: {} },
   teach: lsGet('teach', 'off'),
+  narrOpen: lsGet('narr', '0') === '1',
   teachNote: '',
   whys: ({ 1: 'full', 0: 'off' })[lsGet('whys', 'full')] || lsGet('whys', 'full'), // off | short | full
 };
@@ -203,6 +204,7 @@ function mutate(fn, { rebase = false } = {}) {
 // ---------- actions ----------
 
 const act = {
+  narr() { ui.narrOpen = !ui.narrOpen; lsSet('narr', ui.narrOpen ? '1' : '0'); render(); },
   next: () => mutate((d) => {
     if (!d.hand || d.hand.phase === 'done') return newHand(d);
     pushUndo(d);
@@ -401,13 +403,15 @@ function seatHtml(s, h, st, k, n, view) {
       </div>
     </div>
     <div class="hole">${cards}</div>
-    ${h ? `<div class="made">${esc(made)}</div>` : ''}
     <div class="money-row">
       <span class="stack" ${moneyNum(st.stack)}>${money(st.stack)}</span>
       ${st.bet > 0 ? `<span class="bet" data-key="bet" ${moneyNum(st.bet)}>${money(st.bet)}</span>` : ''}
       ${tags.map((t) => `<span class="tag" data-key="tag-${t}">${t}</span>`).join('')}
     </div>
-    <div class="last-wrap"><div class="last" data-key="last-${esc(last)}" ${st.why ? `title="${esc(st.why)}"` : ''}>${esc(last)}</div></div>
+    <div class="seat-line">
+      <div class="last" data-key="last-${esc(last)}" ${st.why ? `title="${esc(st.why)}"` : ''}>${esc(last)}</div>
+      ${made ? `<div class="made" title="${esc(made)}">${esc(made)}</div>` : ''}
+    </div>
     ${h ? barsHtml(view, k, st.folded || h.phase === 'done') : ''}
   </div>`;
 }
@@ -445,9 +449,11 @@ function narration(h) {
   for (let j = h.log.length - 1; j >= 0; j--) if (h.log[j].kind === 'act' || h.log[j].kind === 'result') { idx = j; break; }
   const l = h.log[idx];
   if (!l) return '<div class="narration empty"></div>';
-  return `<div class="narration" data-key="n${h.no}-${idx}">
-    <div class="n-head"><b>${esc(l.text)}</b>${l.why ? `<span class="why-inline">${esc(l.why)}</span>` : ''}</div>
-    ${l.more?.length ? `<ul class="more">${l.more.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
+  const more = l.more?.length ? l.more : null;
+  return `<div class="narration${ui.narrOpen && more ? ' open' : ''}" data-key="n${h.no}-${idx}">
+    <div class="n-head"><b>${esc(l.text)}</b>${l.why ? `<span class="why-inline" title="${esc(l.why)}">${esc(l.why)}</span>` : ''}
+      ${more ? `<button class="n-toggle" data-act="narr" aria-expanded="${!!ui.narrOpen}">${ui.narrOpen ? 'Less' : 'Why?'}</button>` : ''}</div>
+    ${more && ui.narrOpen ? `<ul class="more">${more.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
   </div>`;
 }
 
@@ -482,7 +488,7 @@ function renderControls(s) {
     }
     const size = (f) => Math.min(L.maxTo, Math.max(L.minRaiseTo, Math.round(h.curBet + (pot + L.toCall) * f)));
     html += `<div class="row override">
-      <span class="muted">Or decide for <b>${esc(L.seat.name)}</b>:</span>
+      <span class="muted">Decide for <b>${esc(L.seat.name)}</b>:</span>
       ${L.toCall > 0 ? `<button class="btn small" data-decide="fold" ${dis}>Fold</button>` : ''}
       <button class="btn small" data-decide="call" ${dis}>${L.toCall > 0 ? `Call ${money(L.toCall)}` : 'Check'}</button>
       ${L.canRaise ? `
@@ -494,15 +500,17 @@ function renderControls(s) {
           <button class="chip-btn" data-size="${L.maxTo}">All-in</button>
         </span>` : ''}
       <span class="teach">
-        <label title="When you override, nudge this player's traits toward your choice in spots like this">🎓 Teach
-          <select id="teach-lesson">
-            <option value="off" ${ui.teach === 'off' ? 'selected' : ''}>No — just this once</option>
-            ${Object.entries(LESSONS).map(([k, l]) => `<option value="${k}" ${ui.teach === k ? 'selected' : ''}>${l.label}</option>`).join('')}
+        <label title="When you decide for a player, nudge their traits toward your choice in spots like this">🎓
+          <select id="teach-lesson" aria-label="Teach the player">
+            <option value="off" ${ui.teach === 'off' ? 'selected' : ''}>Don't teach</option>
+            ${Object.entries(LESSONS).map(([k, l]) => `<option value="${k}" ${ui.teach === k ? 'selected' : ''}>Teach: ${l.short}</option>`).join('')}
           </select></label>
-        ${ui.teach !== 'off' ? `<input id="teach-note" placeholder="Why? (optional, goes in the log)" maxlength="80" value="${esc(ui.teachNote)}">` : ''}
+        ${ui.teach !== 'off' ? `<input id="teach-note" placeholder="Why? (optional)" maxlength="80" value="${esc(ui.teachNote)}">` : ''}
       </span>
     </div>`;
   }
+  // Keep the row's space between betting rounds so the table above doesn't change size.
+  if (!(live && h.phase === 'bet')) html += '<div class="row override placeholder" aria-hidden="true"></div>';
   morph($('#controls'), html);
 }
 

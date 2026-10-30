@@ -8,13 +8,13 @@ import { mulberry32 } from './cards.js';
 
 // What the lesson is about decides which traits are allowed to move.
 export const LESSONS = {
-  auto: { label: 'Work it out', keys: ['loose', 'aggr', 'bluff', 'chase', 'callReq', 'hero', 'posAware', 'threeBet', 'cbet', 'barrel', 'checkRaise', 'sticky', 'scare'] },
-  hands: { label: 'Which hands to play', keys: ['loose', 'posAware', 'limp', 'threeBet'] },
-  bets: { label: 'How much to trust bets', keys: ['callReq', 'hero', 'reads', 'sticky'] },
-  bluff: { label: 'Bluffing', keys: ['bluff'] },
-  draws: { label: 'Chasing draws', keys: ['chase'] },
-  aggro: { label: 'Betting & raising', keys: ['aggr', 'cbet', 'barrel', 'checkRaise', 'slowplay'] },
-  fear: { label: 'Scary boards', keys: ['scare'] },
+  auto: { label: 'Work it out', short: 'anything', keys: ['loose', 'aggr', 'bluff', 'chase', 'callReq', 'hero', 'posAware', 'threeBet', 'cbet', 'barrel', 'checkRaise', 'sticky', 'scare'] },
+  hands: { label: 'Which hands to play', short: 'hand choice', keys: ['loose', 'posAware', 'limp', 'threeBet'] },
+  bets: { label: 'How much to trust bets', short: 'trusting bets', keys: ['callReq', 'hero', 'reads', 'sticky'] },
+  bluff: { label: 'Bluffing', short: 'bluffing', keys: ['bluff'] },
+  draws: { label: 'Chasing draws', short: 'draws', keys: ['chase'] },
+  aggro: { label: 'Betting & raising', short: 'aggression', keys: ['aggr', 'cbet', 'barrel', 'checkRaise', 'slowplay'] },
+  fear: { label: 'Scary boards', short: 'scary boards', keys: ['scare'] },
 };
 
 const ALL = [...TRAITS, ...ADVANCED.flatMap((g) => g.items).filter((t) => t.kind === 'range').map((t) => ({ ...t, min: 0, max: 1 }))];
