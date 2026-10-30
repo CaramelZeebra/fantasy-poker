@@ -7,7 +7,7 @@ import {
 import { PRESETS, TRAITS, ADVANCED, ADV_DEFAULTS, HAND_GRID, advChanged, presetInfo, preflopTop } from './bots.js';
 import { RANKS, SUIT_SYMBOLS, SUIT_NAMES, cardLabel, describeScore, evaluate } from './cards.js';
 import { morph } from './morph.js';
-import { coach, LESSONS } from './trainer.js';
+import { coach, reasonsFor } from './trainer.js';
 import { computeOdds as computeOddsHere } from './odds.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -28,7 +28,9 @@ const ui = {
   odds: { key: undefined },
   prevOdds: null,
   trail: { no: null, rows: {} },
-  teach: lsGet('teach', 'off'),
+  // off | ask (pick a reason each time) | auto (work out what to change)
+  teach: ({ off: 'off', auto: 'auto' })[lsGet('teach', 'off')] || 'ask',
+  ask: null, // the override waiting for a reason: { a, to, key }
   narrOpen: lsGet('narr', '0') === '1',
   teachNote: '',
   whys: ({ 1: 'full', 0: 'off' })[lsGet('whys', 'full')] || lsGet('whys', 'full'), // off | short | full
@@ -247,9 +249,19 @@ const act = {
       while (d.hand.phase !== 'done' && guard++ < 400) step(d.hand, pr);
     }
   }),
-  decide(a) {
-    const to = a === 'raise' ? +($('#raise-to')?.value || 0) : 0;
-    const lesson = ui.teach !== 'off' && state?.hand?.phase === 'bet' ? teachFor(a) : null;
+  // With "ask why" on, an override first asks which reason you'd give; `why` is that reason
+  // ('auto' to let it work things out, 'none' to skip teaching this time).
+  decide(a, why) {
+    const h = state?.hand;
+    const to = a === 'raise' ? +($('#raise-to')?.value || ui.raiseTo || 0) : ui.ask?.to || 0;
+    if (ui.teach === 'ask' && !why && h?.phase === 'bet') {
+      ui.ask = { a, to, key: `${h.no}:${h.log.length}` };
+      return render();
+    }
+    const reason = why && why !== 'auto' && why !== 'none' ? askReasons().find((r) => r.id === why) : null;
+    const teach = ui.teach !== 'off' && why !== 'none' && h?.phase === 'bet';
+    const lesson = teach ? teachFor(a, reason || 'auto') : null;
+    ui.ask = null;
     mutate((d) => {
       if (!d.hand || d.hand.phase !== 'bet') return false;
       pushUndo(d);
@@ -267,24 +279,37 @@ const act = {
 // ---------- coaching ----------
 
 // Work out what an override should teach the player to act, before the move is made.
-function teachFor(a) {
+const targetOf = (a) => (a === 'call' && legal(state.hand).toCall <= 0 ? 'check' : a);
+const verbOf = (t) => ({ fold: 'fold', check: 'check', call: 'call', raise: legal(state.hand).toCall <= 0 ? 'bet' : 'raise' }[t]);
+
+// The reasons on offer for the override waiting in ui.ask.
+function askReasons() {
+  const h = state?.hand;
+  if (!ui.ask || !h || h.phase !== 'bet') return [];
+  const pr = profilesFor(state);
+  const names = (pid) => h.seats.find((q) => q.pid === pid)?.name || 'them';
+  return reasonsFor(botView(h, pr), targetOf(ui.ask.a), names);
+}
+
+function teachFor(a, reason) {
   const h = state.hand, i = h.toAct, st = h.seats[i];
   const pr = profilesFor(state);
-  const free = legal(h).toCall <= 0;
-  const target = a === 'call' && free ? 'check' : a;
+  const target = targetOf(a);
   const { _style, ...profile } = pr[i];
-  const r = coach(botView(h, pr), profile, target, ui.teach);
-  const verb = { fold: 'fold', check: 'check', call: 'call', raise: free ? 'bet' : 'raise' }[target];
-  const note = ui.teachNote.trim();
+  const r = coach(botView(h, pr), profile, target, reason);
+  const verb = verbOf(target);
+  const note = [reason?.text, ui.teachNote.trim()].filter(Boolean).join(' — ');
   const changed = r.changes.map((c) => `${c.label} ${c.to > c.from ? '↑' : '↓'} ${fmtTrait(c.key, c.from)} → ${fmtTrait(c.key, c.to)}`);
   const odds = `${pctWhole(r.before)} → ${pctWhole(r.after)} chance to ${verb} here${r.after - r.before < 0.05 ? ' — far from their usual game, so it will take a few more lessons' : ''}`;
-  const area = LESSONS[ui.teach]?.label.toLowerCase();
+  const area = reason ? 'that' : 'their game';
   return {
     pid: st.pid,
     changes: r.changes,
     headline: `you'd ${verb}${note ? ` — “${note}”` : ''}`,
     logText: `🎓 ${st.name} coached to ${verb}${note ? ` (“${note}”)` : ''}: ${changed.length ? `${changed.join(', ')} · ${odds}` : `nothing about ${area} would change this — left as is`}`,
-    toastText: changed.length ? `${st.name} learned: ${changed.join(', ')} (${odds})` : `Nothing about ${area} would make ${st.name} ${verb} here — no change.`,
+    toastText: changed.length ? `${st.name} learned: ${changed.join(', ')} (${odds})`
+      : reason ? `That reason doesn't push ${st.name} toward ${verb === 'bet' ? 'betting' : verb === 'fold' ? 'folding' : `${verb}ing`} here — no change.`
+      : `Nothing about ${area} would make ${st.name} ${verb} here — no change.`,
   };
 }
 const pctWhole = (x) => `${Math.round(x * 100)}%`;
@@ -502,16 +527,37 @@ function renderControls(s) {
       <span class="teach">
         <label title="When you decide for a player, nudge their traits toward your choice in spots like this">🎓
           <select id="teach-lesson" aria-label="Teach the player">
-            <option value="off" ${ui.teach === 'off' ? 'selected' : ''}>Don't teach</option>
-            ${Object.entries(LESSONS).map(([k, l]) => `<option value="${k}" ${ui.teach === k ? 'selected' : ''}>Teach: ${l.short}</option>`).join('')}
+            ${[['off', "Don't teach"], ['ask', 'Teach: ask me why'], ['auto', 'Teach: work it out']]
+              .map(([k, l]) => `<option value="${k}" ${ui.teach === k ? 'selected' : ''}>${l}</option>`).join('')}
           </select></label>
-        ${ui.teach !== 'off' ? `<input id="teach-note" placeholder="Why? (optional)" maxlength="80" value="${esc(ui.teachNote)}">` : ''}
       </span>
     </div>`;
+    html += askHtml(h);
   }
   // Keep the row's space between betting rounds so the table above doesn't change size.
   if (!(live && h.phase === 'bet')) html += '<div class="row override placeholder" aria-hidden="true"></div>';
   morph($('#controls'), html);
+}
+
+// "Why fold?": the reasons you could give this player, worded for the spot.
+function askHtml(h) {
+  if (!ui.ask) return '';
+  if (ui.ask.key !== `${h.no}:${h.log.length}` || ui.auto) { ui.ask = null; return ''; }
+  const verb = verbOf(targetOf(ui.ask.a));
+  const name = esc(h.seats[h.toAct].name);
+  const reasons = askReasons();
+  return `<div class="ask" role="dialog" aria-label="Why ${verb}?">
+    <div class="ask-head"><b>Why ${verb}?</b> <span class="muted">Teach ${name} the reason you'd ${verb} here</span>
+      <button class="chip-btn" data-ask-cancel aria-label="Cancel">✕</button></div>
+    <div class="ask-list">
+      ${reasons.map((r) => `<button class="ask-r" data-why="${r.id}">${esc(r.text)}</button>`).join('')}
+      <button class="ask-r ghost" data-why="auto">Something else — work it out from this spot</button>
+    </div>
+    <div class="ask-foot">
+      <input id="teach-note" placeholder="Add a note for the log (optional)" maxlength="80" value="${esc(ui.teachNote)}">
+      <button class="btn small ghost" data-why="none">Just ${verb}, don't teach</button>
+    </div>
+  </div>`;
 }
 
 function trailHtml(no, i) {
@@ -1051,6 +1097,9 @@ $('#controls').addEventListener('click', (e) => {
   if (size) { ui.raiseTo = +size.dataset.size; $('#raise-to').value = ui.raiseTo; return; }
   const d = e.target.closest('[data-decide]');
   if (d) return act.decide(d.dataset.decide);
+  const w = e.target.closest('[data-why]');
+  if (w && ui.ask) return act.decide(ui.ask.a, w.dataset.why);
+  if (e.target.closest('[data-ask-cancel]')) { ui.ask = null; return render(); }
   const a = e.target.closest('[data-act]');
   if (a && act[a.dataset.act]) act[a.dataset.act]();
 });
@@ -1096,7 +1145,9 @@ $('#tabs').addEventListener('click', (e) => {
 });
 $('#edit-table').addEventListener('click', openEditor);
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && ui.ask) { ui.ask = null; render(); return; }
   if (e.target.closest('input, select, textarea, dialog') || e.metaKey || e.ctrlKey) return;
+  if (ui.ask) return; // waiting for a reason: don't let the hand move on underneath it
   if (e.key === ' ' || e.key === 'ArrowRight') { e.preventDefault(); if (!ui.auto) act.next(); }
   const k = e.key.toLowerCase();
   if (k === 'u' && !ui.auto) act.undo();

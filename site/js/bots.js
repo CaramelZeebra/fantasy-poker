@@ -439,7 +439,9 @@ export function decide(v, p0, rnd = Math.random) {
     }
     const strictness = clamp((p.callReq - 0.3) / 1.3, 0, 1);
     let cont = range * Math.pow(0.3 + 0.45 * (1 - strictness), v.raises) * (1 + 0.3 * p.hero);
-    if (bettor) cont *= clamp(1 - 0.6 * (betStrength(bettor) - S0), 0.6, 1.4); // respect the nit's raise
+    // Respect the nit's raise; widen up against the friend who raises with anything. Good
+    // readers lean on what they know harder.
+    if (bettor) cont *= clamp(Math.exp(-(2 + 4 * p.reads) * (betStrength(bettor) - S0)), 0.5, 2.5);
     const commit = v.toCall / Math.max(1, v.stack);
     if (commit > 0.25) cont *= 1 - 0.6 * Math.min(1, commit) * Math.min(1, p.callReq);
     // Tiny price to see a flop: almost everyone continues.

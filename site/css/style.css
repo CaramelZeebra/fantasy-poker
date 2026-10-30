@@ -470,6 +470,26 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 /* ---------- coaching ---------- */
 .teach { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; font-size: 13px; color: var(--muted); }
 .teach select, .teach input { background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; color: var(--text); }
-.teach input { width: 150px; }
 .log li.coach { color: #b9a6f5; font-size: 13px; }
-@media (max-width: 1500px) { .teach input { display: none; } }
+/* "Why fold?" — floats above the override row so the table doesn't move. */
+.controls { position: relative; }
+.ask {
+  position: absolute; right: 0; bottom: 54px; z-index: 30; width: min(580px, 100%);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .45); display: grid; gap: 8px; animation: ask-in .14s ease-out;
+}
+@keyframes ask-in { from { opacity: 0; transform: translateY(6px); } }
+.ask-head { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+.ask-head .muted { font-size: 12.5px; flex: 1; }
+.ask-list { display: grid; gap: 4px; }
+.ask-r {
+  text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 10px; color: var(--text); font: inherit; font-size: 13.5px; cursor: pointer;
+}
+.ask-r:hover, .ask-r:focus-visible { border-color: #b9a6f5; background: #221f30; }
+.ask-r.ghost { color: var(--muted); border-style: dashed; }
+.ask-foot { display: flex; gap: 8px; align-items: center; }
+.ask-foot input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; color: var(--text); }
+@media (max-width: 760px) {
+  .ask { position: fixed; left: 8px; right: 8px; bottom: 8px; width: auto; }
+}
