@@ -277,7 +277,7 @@ function teachFor(a) {
   const verb = { fold: 'fold', check: 'check', call: 'call', raise: free ? 'bet' : 'raise' }[target];
   const note = ui.teachNote.trim();
   const changed = r.changes.map((c) => `${c.label} ${c.to > c.from ? '↑' : '↓'} ${fmtTrait(c.key, c.from)} → ${fmtTrait(c.key, c.to)}`);
-  const odds = `${pctWhole(r.before)} → ${pctWhole(r.after)} chance to ${verb} here`;
+  const odds = `${pctWhole(r.before)} → ${pctWhole(r.after)} chance to ${verb} here${r.after - r.before < 0.05 ? ' — far from their usual game, so it will take a few more lessons' : ''}`;
   const area = LESSONS[ui.teach]?.label.toLowerCase();
   return {
     pid: st.pid,

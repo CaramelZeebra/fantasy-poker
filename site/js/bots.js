@@ -252,6 +252,11 @@ export function drawOuts(hole, board) {
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 
+// Chance of going ahead when `margin` clears a threshold, blurred over about `width` either side.
+// Real players aren't step functions: a hand just over the line plays most of the time, a hand
+// just under it sometimes does too. (Also what lets coaching shift tendencies a little at a time.)
+const soft = (margin, width) => 1 / (1 + Math.exp(-margin / width));
+
 // What a player "knows" about someone's habits: their real personality, blurred toward an
 // average player by how well they read people.
 const PRIOR = { loose: 0.4, bluff: 0.25, hero: 0.4, callReq: 1, aggr: 0.5 };
@@ -418,11 +423,12 @@ export function decide(v, p0, rnd = Math.random) {
       const raiseRange = range * clamp(0.25 + 0.85 * p.aggr, 0, 1) * (1 - p.limp);
       const limpers = Math.max(0, Math.round((v.pot - v.bb * 1.5) / v.bb));
       const open = (why, tag) => raise(v.bb * (2.2 + 1.3 * p.aggr + rnd() * 0.5) * sizeMult + limpers * v.bb, why, tag);
-      if (top <= raiseRange) {
+      const edge = 0.02 + 0.08 * range; // how blurry this player's hand-selection line is
+      if (rnd() < soft(raiseRange - top, edge * Math.max(0.3, raiseRange / range))) {
         if (p.aggr > 0.95 && rnd() < 0.08) return raise(allInTo, `${handTxt} and feeling wild — straight all-in`, 'shove');
         return open(`${handTxt} — strong enough to raise`);
       }
-      if (top <= range || loves) {
+      if (loves || rnd() < soft(range - top, edge)) {
         const why = lovesTxt || `${handTxt}; ${plays}`;
         if (X) ctx.push(`Only raises first in with about the top ${P(raiseRange)}${p.limp > 0.3 ? ', and likes to limp' : ''}.`);
         return p.aggr > 0.6 && rnd() < p.aggr - 0.4 && rnd() >= p.limp ? open(`${why}, and aggressive with it`)
@@ -451,8 +457,9 @@ export function decide(v, p0, rnd = Math.random) {
         `Re-raises with roughly the top ${P(reraise)}.`,
       );
     }
-    if (top <= reraise && v.raises < 4) return raise(v.curBet * (2.6 + rnd() * 0.6), `${handTxt} — too good to just call ${facing}`);
-    if (top <= cont) return call([`${handTxt}; ${contTxt}`, cheap && top > range * 0.6 ? 'cheap enough to see a flop' : '', bettorRead()].filter(Boolean).join(', '));
+    const edge = 0.02 + 0.08 * cont;
+    if (v.raises < 4 && rnd() < soft(reraise - top, edge * 0.5)) return raise(v.curBet * (2.6 + rnd() * 0.6), `${handTxt} — too good to just call ${facing}`);
+    if (rnd() < soft(cont - top, edge)) return call([`${handTxt}; ${contTxt}`, cheap && top > range * 0.6 ? 'cheap enough to see a flop' : '', bettorRead()].filter(Boolean).join(', '));
     if (loves && commit < 0.15) return call(`${lovesTxt}, and the price is small`);
     if (v.raises < 3 && rnd() < p.bluff * 0.06 * bluffMult) return raise(v.curBet * 3, `Re-raise bluff with ${code}`, 'bluff');
     return fold([`${handTxt}; only ${contTxt}`, commit > 0.25 ? `would risk ${P(commit)} of their stack` : '', bettorRead()].filter(Boolean).join(', '));
@@ -490,13 +497,13 @@ export function decide(v, p0, rnd = Math.random) {
   }
 
   if (free) {
-    if (H > 0.9 && rnd() < (1 - p.aggr) * 0.8 * p.slowplay) return out({ a: 'check' }, `${strength} — slowplaying to trap`, 'trap');
+    if (rnd() < soft(H - 0.9, 0.03) * (1 - p.aggr) * 0.8 * p.slowplay) return out({ a: 'check' }, `${strength} — slowplaying to trap`, 'trap');
     // Check-raisers check good hands and big draws when someone still to act is likely to bet.
     if (p.checkRaise > 0 && !v.inPos && v.street < 3 && (H > 0.55 || outs >= 8) && rnd() < p.checkRaise * 0.75) {
       return out({ a: 'check' }, `${strength} — checking, hoping someone bets so they can raise`, 'trap');
     }
     const valueBar = 0.6 - 0.12 * p.aggr - 0.2 * (F0 - avgFold); // thinner value vs stations
-    if (H > valueBar && rnd() < 0.35 + 0.65 * p.aggr) {
+    if (rnd() < soft(H - valueBar, 0.05) * (0.35 + 0.65 * p.aggr)) {
       let frac = 0.4 + 0.45 * p.aggr * rnd();
       const over = rnd() < p.aggr * 0.12;
       if (over) frac += 0.7; // overbet
@@ -522,7 +529,7 @@ export function decide(v, p0, rnd = Math.random) {
   }
 
   if (v.checked && p.checkRaise > 0 && v.raises < 3) {
-    if (H > 0.55 && rnd() < p.checkRaise) return raise(v.curBet * (2.8 + rnd() * 0.6), `Check-raise! ${strength} — checked to set the trap`, 'trap');
+    if (rnd() < soft(H - 0.55, 0.05) * p.checkRaise) return raise(v.curBet * (2.8 + rnd() * 0.6), `Check-raise! ${strength} — checked to set the trap`, 'trap');
     if (outs >= 8 && v.street < 3 && rnd() < p.checkRaise * (0.4 + 0.5 * p.chase)) return raise(v.curBet * 3, `Check-raise semi-bluff: ${has} with ${outs} outs`, 'semi');
     if (rnd() < p.checkRaise * p.bluff * 0.5 * bluffMult) return raise(v.curBet * 3, `Check-raise bluff with ${has}`, 'bluff');
   }
@@ -562,16 +569,17 @@ export function decide(v, p0, rnd = Math.random) {
     drawBoost > 0.05 ? `chasing ${outs} outs` : '',
   ].filter(Boolean).join(', ') : '';
 
-  if (H > 0.85 && v.raises < 4 && rnd() < p.aggr * 0.8) return raise(v.curBet * (2.5 + rnd() * 0.7), `${strength} — raising for value`, 'value');
+  if (v.raises < 4 && rnd() < soft(H - 0.85, 0.04) * p.aggr * 0.8) return raise(v.curBet * (2.5 + rnd() * 0.7), `${strength} — raising for value`, 'value');
   if (outs >= 8 && v.street < 3 && v.raises < 2 && rnd() < p.aggr * p.chase * 0.35 * bluffMult) {
     return raise(v.curBet * (2.6 + rnd() * 0.5), `Raising the draw: ${has} with ${outs} outs — can take it now or hit later`, 'semi');
   }
-  if (eff >= need) return call(`${has}: ${math}`);
+  const close = Math.abs(eff - need) < 0.06 ? (eff >= need ? ' — close, but calls' : ' — close, calls anyway') : '';
+  if (rnd() < soft(eff - need, 0.035)) return call(`${has}: ${math}${close}`);
   if (p.sticky > 0 && topPairPlus(v.hole, v.board, mineScore) && rnd() < p.sticky) return call(`${has} — just can't let it go (${math})`, 'sticky');
   const boardOnly = evaluate(v.board) >> 20;
   if (mine > boardOnly && rnd() < p.hero * 0.35) return call(`Hero call! ${has} and doesn't believe ${who} (${math})`, 'hero');
   if (v.raises < 3 && rnd() < p.bluff * 0.07 * bluffMult) return raise(v.curBet * 2.8, `Raise bluff with ${has} — trying to push ${who} off`, 'bluff');
-  return fold(`${has}: ${math}`);
+  return fold(`${has}: ${math}${eff >= need ? ' — close, but lets it go' : ''}`);
 }
 
 // The board's texture in words.

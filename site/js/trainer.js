@@ -1,8 +1,9 @@
 // Coaching: when you override a bot, nudge its traits so that in this exact spot it would
 // lean toward what you chose. It's a small, numerical back-propagation: estimate how likely
 // the bot is to pick your action, see which traits move that likelihood (by trying each one
-// a little higher and lower), and step the traits that way. Steps are capped so one lesson
-// shifts a player a little, not completely.
+// a little higher and lower), and step the traits that way. A lesson aims for a modest shift
+// (about GAIN more likely to do what you chose here), so a player drifts toward your view over
+// several lessons instead of swinging on one.
 import { decide, TRAITS, ADVANCED } from './bots.js';
 import { mulberry32 } from './cards.js';
 
@@ -20,9 +21,11 @@ export const LESSONS = {
 const ALL = [...TRAITS, ...ADVANCED.flatMap((g) => g.items).filter((t) => t.kind === 'range').map((t) => ({ ...t, min: 0, max: 1 }))];
 const spec = (k) => ALL.find((t) => t.key === k);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-const SAMPLES = 160;
-const STEP = 0.05;   // largest move per round, as a share of the trait's range
-const ROUNDS = 3;
+const SAMPLES = 240;
+const GAIN = 0.2;    // how much more likely, per lesson, to make the choice you made
+const STEP = 0.025;  // largest move per round, as a share of the trait's range
+const ROUNDS = 6;
+const TOTAL = 0.08;  // most any one trait can move in a single lesson, as a share of its range
 
 // How often this profile picks `target` here. The same random stream every time, so two
 // profiles are compared on identical luck and small differences show up cleanly.
@@ -38,7 +41,8 @@ export function coach(v, profile, target, lesson = 'auto') {
   const before = likelihood(v, profile, target);
   let cur = { ...profile };
   let now = before;
-  for (let round = 0; round < ROUNDS && now < 0.9; round++) {
+  const goal = Math.min(0.95, before + GAIN);
+  for (let round = 0; round < ROUNDS && now < goal; round++) {
     const moves = {};
     let any = false;
     for (const k of keys) {
@@ -54,8 +58,12 @@ export function coach(v, profile, target, lesson = 'auto') {
         if (Math.abs(grad) >= 0.05) break;
       }
       if (Math.abs(grad) < 0.05) continue;
-      moves[k] = clamp(grad * 0.25, -STEP, STEP) * span;
-      if (Math.abs(moves[k]) < 0.02 * span) moves[k] = Math.sign(grad) * 0.02 * span;
+      // Don't let any one trait run further than TOTAL in a single lesson.
+      const room = TOTAL * span - Math.abs(cur[k] - profile[k]) * (Math.sign(cur[k] - profile[k]) === Math.sign(grad) ? 1 : -1);
+      if (room <= 0.001 * span) continue;
+      let m = clamp(grad * 0.1, -STEP, STEP) * span;
+      if (Math.abs(m) < 0.01 * span) m = Math.sign(grad) * 0.01 * span;
+      moves[k] = Math.sign(m) * Math.min(Math.abs(m), room);
       any = true;
     }
     if (!any) break;
