@@ -27,6 +27,7 @@ const ui = {
   odds: { key: undefined },
   prevOdds: null,
   trail: { no: null, rows: {} },
+  whys: lsGet('whys', '1') === '1',
 };
 const avatars = new Set();
 let store, state = null;
@@ -215,7 +216,7 @@ const act = {
     mutate((d) => {
       if (!d.hand || d.hand.phase !== 'bet') return false;
       pushUndo(d);
-      applyAction(d.hand, { a, to });
+      applyAction(d.hand, { a, to, why: 'Your call — decided by hand' });
     });
   },
 };
@@ -304,7 +305,9 @@ function seatHtml(s, h, st, k, n, view) {
   if (h && st.tilted && fullProfile(p).tilt > 0) tags.push('😤 Tilted');
   const last = st.allIn && !st.folded && h?.phase !== 'done' ? 'All-in' : st.last || '';
   const made = madeHand(h, st);
+  const said = h ? [...(h.says || [])].reverse().find((x) => x.i === k && (h.phase === 'done' || x.at >= h.log.length - 3)) : null;
   return `<div class="${cls.join(' ')}" data-key="seat-${st.pid}" style="--x:${x}%;--y:${y}%">
+    ${said ? `<div class="say" data-key="say-${said.at}">${esc(said.text)}</div>` : ''}
     <div class="seat-head">
       ${avatarHtml(p)}
       <div class="who">
@@ -319,7 +322,7 @@ function seatHtml(s, h, st, k, n, view) {
       ${st.bet > 0 ? `<span class="bet" data-key="bet" ${moneyNum(st.bet)}>${money(st.bet)}</span>` : ''}
       ${tags.map((t) => `<span class="tag" data-key="tag-${t}">${t}</span>`).join('')}
     </div>
-    <div class="last-wrap"><div class="last" data-key="last-${esc(last)}">${esc(last)}</div></div>
+    <div class="last-wrap"><div class="last" data-key="last-${esc(last)}" ${st.why ? `title="${esc(st.why)}"` : ''}>${esc(last)}</div></div>
     ${h ? barsHtml(view, k, st.folded || h.phase === 'done') : ''}
   </div>`;
 }
@@ -350,6 +353,16 @@ function renderTable(s) {
     ${h.phase === 'done' && h.result ? `<div class="result" data-key="result-${h.no}">${esc(h.result.summary)}</div>` : ''}`);
 }
 
+// The latest action and the reason behind it, under the table.
+function narration(h) {
+  if (!h) return '<div class="narration empty"></div>';
+  let idx = -1;
+  for (let j = h.log.length - 1; j >= 0; j--) if (h.log[j].kind === 'act' || h.log[j].kind === 'result') { idx = j; break; }
+  const l = h.log[idx];
+  if (!l) return '<div class="narration empty"></div>';
+  return `<div class="narration" data-key="n${h.no}-${idx}"><b>${esc(l.text)}</b>${l.why ? `<span class="why-inline">${esc(l.why)}</span>` : ''}</div>`;
+}
+
 function renderControls(s) {
   const h = s.hand;
   const dis = ui.auto ? 'disabled' : '';
@@ -357,7 +370,8 @@ function renderControls(s) {
     : h.phase === 'deal' ? `Deal the ${['flop', 'turn', 'river'][h.street]}`
     : `${esc(h.seats[h.toAct].name)} acts`;
   const live = h && h.phase !== 'done';
-  let html = `<div class="row main">
+  let html = narration(h);
+  html += `<div class="row main">
     <button class="btn primary big" data-act="next" ${dis} title="Shortcut: Space">▶ ${nextLabel}</button>
     ${live && h.phase === 'bet' ? `<button class="btn" data-act="street" ${dis} title="Shortcut: F">⏭ Finish ${streetName(h.street).toLowerCase()}</button>` : ''}
     ${live ? `<button class="btn ${ui.auto ? 'stop' : ''}" data-act="auto" title="Shortcut: A">${ui.auto ? '■ Stop' : '⏯ Auto-play hand'}</button>` : ''}
@@ -437,7 +451,73 @@ function oddsPanel(s) {
 function logPanel(s) {
   const h = s.hand;
   if (!h) return '<p class="empty">No hand yet.</p>';
-  return `<ol class="log">${h.log.map((l) => `<li class="${l.kind}">${esc(l.text)}</li>`).join('')}</ol>`;
+  return `<label class="check log-opt"><input type="checkbox" id="show-whys" ${ui.whys ? 'checked' : ''}> Show why each player acted</label>
+  <ol class="log">${h.log.map((l) => `<li class="${l.kind}">${esc(l.text)}${ui.whys && l.why ? `<div class="why">${esc(l.why)}</div>` : ''}</li>`).join('')}</ol>`;
+}
+
+// ---------- session graph ----------
+// Validated (dark surface, adjacent pairs) categorical order; colour follows the player's seat
+// in the player list, so it never changes when someone else is added or busts.
+const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767', '#95a39b'];
+const colorOf = (s, pid) => SERIES[Math.max(0, s.players.findIndex((p) => p.id === pid)) % SERIES.length];
+
+function bankrollChart(s) {
+  const track = s.track || [];
+  if (track.length < 2) return '<p class="empty small">The session graph appears after a couple of hands.</p>';
+  const players = s.players.filter((p) => track.some((t) => p.id in t.nets));
+  const W = 340, H = 190, L = 44, R = 62, T = 10, B = 22;
+  const vals = track.flatMap((t) => players.map((p) => t.nets[p.id] ?? 0));
+  let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+  if (hi - lo < 10) { hi += 5; lo -= 5; }
+  const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+  const x = (i) => L + (i / (track.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const step = niceStep((hi - lo) / 4);
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) ticks.push(v);
+  const hiPid = ui.hiPid;
+  const lines = players.map((p) => {
+    const d = track.map((t, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(t.nets[p.id] ?? 0).toFixed(1)}`).join('');
+    const dim = hiPid && hiPid !== p.id ? ' dim' : '';
+    return `<path class="line${dim}" d="${d}" stroke="${colorOf(s, p.id)}"/>`;
+  }).join('');
+  // End labels, nudged apart so names never overlap.
+  const ends = players.map((p) => ({ p, v: track.at(-1).nets[p.id] ?? 0 })).sort((a, b) => b.v - a.v)
+    .map((e) => ({ ...e, ly: y(e.v) }));
+  for (let i = 1; i < ends.length; i++) ends[i].ly = Math.max(ends[i].ly, ends[i - 1].ly + 11);
+  const over = ends.length ? ends.at(-1).ly - (H - B + 4) : 0;
+  if (over > 0) for (const e of ends) e.ly -= over;
+  const labels = ends.map((e) => `<g class="end${hiPid && hiPid !== e.p.id ? ' dim' : ''}">
+    <circle cx="${x(track.length - 1)}" cy="${y(e.v)}" r="3" fill="${colorOf(s, e.p.id)}"/>
+    <text x="${W - R + 8}" y="${e.ly + 3.5}">${esc(e.p.name)}</text></g>`).join('');
+  let hover = '';
+  if (ui.hoverIdx != null && ui.hoverIdx < track.length) {
+    const i = ui.hoverIdx, t = track[i], hx = x(i);
+    const rows = players.map((p) => ({ p, v: t.nets[p.id] ?? 0 })).sort((a, b) => b.v - a.v);
+    hover = `<line class="cross" x1="${hx}" x2="${hx}" y1="${T}" y2="${H - B}"/>
+      ${rows.map((r) => `<circle class="pt" cx="${hx}" cy="${y(r.v)}" r="4" fill="${colorOf(s, r.p.id)}"/>`).join('')}`;
+    ui.tip = { left: Math.min(76, Math.max(24, (hx / W) * 100)), html: `<b>After hand #${t.no}</b>${rows.map((r) => `<div><i style="background:${colorOf(s, r.p.id)}"></i>${esc(r.p.name)}<span class="${r.v > 0 ? 'pos' : r.v < 0 ? 'neg' : ''}">${signed(r.v)}</span></div>`).join('')}` };
+  } else ui.tip = null;
+  return `<figure class="chart" data-key="chart">
+    <figcaption>Net result over the session <span class="muted">· last ${track.length} hands</span></figcaption>
+    <div class="chart-box">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Each player's net result after every hand">
+        ${ticks.map((v) => `<line class="grid${v === 0 ? ' zero' : ''}" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>
+          <text class="tick" x="${L - 6}" y="${y(v) + 3.5}">${v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString()}</text>`).join('')}
+        <text class="tick x" x="${L}" y="${H - 6}">#${track[0].no}</text>
+        <text class="tick x end-x" x="${W - R}" y="${H - 6}">#${track.at(-1).no}</text>
+        ${lines}${labels}${hover}
+        <rect class="hit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" data-n="${track.length}" data-l="${L}" data-w="${W - L - R}" data-vw="${W}"/>
+      </svg>
+      ${ui.tip ? `<div class="tip" style="left:${ui.tip.left}%">${ui.tip.html}</div>` : ''}
+    </div>
+  </figure>`;
+}
+
+function niceStep(raw) {
+  const m = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1))));
+  const f = raw / m;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * m;
 }
 
 function moneyPanel(s) {
@@ -448,10 +528,10 @@ function moneyPanel(s) {
     return { p, stack, net: stack - p.bought };
   }).sort((a, b) => b.net - a.net);
   const per = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
-  return `<table class="grid money">
+  return `${bankrollChart(s)}<table class="grid money">
     <tr><th>Player</th><th>Stack</th><th>Bought in</th><th>Net</th><th title="Voluntarily put money in pot">VPIP</th><th title="Preflop raise">PFR</th><th>Won</th></tr>
-    ${rows.map(({ p, stack, net }) => `<tr class="${p.out ? 'folded' : ''}" data-key="m${p.id}">
-      <td title="${esc(infoOf(p).desc)}">${esc(infoOf(p).emoji)} ${esc(p.name)}</td><td ${moneyNum(stack)}>${money(stack)}</td><td>${money(p.bought)}</td>
+    ${rows.map(({ p, stack, net }) => `<tr class="${p.out ? 'folded' : ''}${ui.hiPid === p.id ? ' hi' : ''}" data-key="m${p.id}" data-pid="${p.id}">
+      <td title="${esc(infoOf(p).desc)}"><i class="swatch" style="background:${colorOf(s, p.id)}"></i>${esc(infoOf(p).emoji)} ${esc(p.name)}</td><td ${moneyNum(stack)}>${money(stack)}</td><td>${money(p.bought)}</td>
       <td class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}"><b>${signed(net)}</b></td>
       <td>${per(p.stats.vpip, p.stats.hands)}</td><td>${per(p.stats.pfr, p.stats.hands)}</td>
       <td>${p.stats.wins}/${p.stats.hands}</td></tr>`).join('')}
@@ -649,6 +729,7 @@ function openEditor() {
         <label>Big blind <input type="number" min="1" data-s="bb" value="${S.bb}"></label>
         <label>Buy-in <input type="number" min="10" data-s="buyIn" value="${S.buyIn}"></label>
         <label class="check"><input type="checkbox" data-s="autoRebuy" ${S.autoRebuy ? 'checked' : ''}> Auto-rebuy when busted</label>
+        <label class="check"><input type="checkbox" data-s="chatter" ${S.chatter !== false ? 'checked' : ''}> Table chatter</label>
       </div>
       <h3>Players <span class="muted">${ed.players.length}/9</span></h3>
       <div class="ed-players">${ed.players.map(playerRow).join('')}</div>
@@ -767,6 +848,7 @@ function openEditor() {
           p.stats = { hands: 0, vpip: 0, pfr: 0, wins: 0, biggest: 0 };
         }
         d.history = [];
+        d.track = [];
         d.hand = null;
         d.undo = [];
       }
@@ -794,6 +876,29 @@ $('#controls').addEventListener('input', (e) => {
 $('#table').addEventListener('click', (e) => {
   const c = e.target.closest('[data-card]');
   if (c && !ui.auto) openPicker(+c.dataset.card);
+});
+$('#panel').addEventListener('pointermove', (e) => {
+  const hit = e.target.closest('.hit');
+  const row = e.target.closest('tr[data-pid]');
+  let idx = null;
+  if (hit) {
+    const svg = hit.ownerSVGElement.getBoundingClientRect();
+    const vx = ((e.clientX - svg.left) / svg.width) * +hit.dataset.vw;
+    idx = Math.round(((vx - +hit.dataset.l) / +hit.dataset.w) * (+hit.dataset.n - 1));
+    idx = Math.max(0, Math.min(+hit.dataset.n - 1, idx));
+  }
+  const pid = row ? row.dataset.pid : null;
+  if (idx !== ui.hoverIdx || pid !== ui.hiPid) { ui.hoverIdx = idx; ui.hiPid = pid; render(); }
+});
+$('#panel').addEventListener('pointerleave', () => {
+  if (ui.hoverIdx == null && !ui.hiPid) return;
+  ui.hoverIdx = null; ui.hiPid = null; render();
+});
+$('#panel').addEventListener('input', (e) => {
+  if (e.target.id !== 'show-whys') return;
+  ui.whys = e.target.checked;
+  lsSet('whys', ui.whys ? '1' : '0');
+  render();
 });
 $('#tabs').addEventListener('click', (e) => {
   const t = e.target.closest('[data-tab]');

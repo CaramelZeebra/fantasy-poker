@@ -1,7 +1,8 @@
 // No-limit hold'em table state. Everything here is plain JSON so it can live in the shared blob.
 // Hand phases: 'bet' (someone must act), 'deal' (street finished, next card waits), 'done'.
 import { cardLabel, describeScore, evaluate, shuffle } from './cards.js';
-import { PRESETS, ADV_DEFAULTS, decide } from './bots.js';
+import { PRESETS, ADV_DEFAULTS, decide, handCode } from './bots.js';
+import { line } from './chatter.js';
 
 const STREET_NAMES = ['Preflop', 'Flop', 'Turn', 'River'];
 export const streetName = (i) => STREET_NAMES[i] ?? 'Showdown';
@@ -33,7 +34,17 @@ export const fullProfile = (p) => ({ ...(PRESETS[p?.preset]?.profile || ADV_DEFA
 export const profilesFor = (state) =>
   state.hand ? state.hand.seats.map((s) => fullProfile(state.players.find((p) => p.id === s.pid))) : [];
 
-const log = (h, text, kind = 'act') => { if (h.log) h.log.push({ kind, text }); };
+const log = (h, text, kind = 'act', extra) => { if (h.log) h.log.push(extra ? { kind, text, ...extra } : { kind, text }); };
+
+// Table talk: a line from seat i about `event`, shown as a speech bubble and kept in the log.
+function say(h, i, event, vars = {}, chance = 1) {
+  if (!h.log || !h.chatter || i < 0 || Math.random() > chance) return;
+  const s = h.seats[i];
+  const text = line(event, s.voice, vars);
+  if (!text) return;
+  h.says = [...(h.says || []), { i, text, at: h.log.length }].slice(-6);
+  log(h, `${s.name}: “${text}”`, 'chat');
+}
 const potTotal = (h) => h.seats.reduce((a, s) => a + s.total, 0);
 export { potTotal };
 
@@ -64,6 +75,10 @@ export function commitHand(state) {
     // A big loss sets a player on tilt for a few hands (only matters if they tilt).
     if (s.total - s.won >= 25 * h.bb) p.tiltLeft = 5;
     else if (p.tiltLeft > 0) p.tiltLeft--;
+  }
+  if (done) {
+    // Everyone's running result after each hand, for the session graph.
+    state.track = [...(state.track || []), { no: h.no, nets: Object.fromEntries(state.players.map((p) => [p.id, p.stack - p.bought])) }].slice(-400);
   }
   if (done && h.result) {
     state.history.unshift({ no: h.no, text: h.result.summary });
@@ -104,6 +119,7 @@ export function startHand(state) {
     stack: p.stack, start: p.stack, bet: 0, total: 0,
     folded: false, allIn: false, acted: false, last: '', vpip: false, pfr: false, won: 0,
     tilted: (p.tiltLeft || 0) > 0, net: (p.stack - p.bought) / buyIn, checkedOn: -1,
+    voice: p.preset in PRESETS ? p.preset : 'custom', why: '', tag: '',
   }));
   const n = seats.length;
   const btn = seats.findIndex((s) => s.pid === btnPlayer.id);
@@ -112,9 +128,16 @@ export function startHand(state) {
   const h = {
     no: state.handNo, seats, btn, sbI, bbI, bb, board5: deck.splice(0, 5), shown: 0,
     street: 0, phase: 'bet', toAct: -1, aggressor: -1, initiative: -1, curBet: 0, minRaise: bb, raises: 0,
-    log: [], result: null, odds: null, committed: false,
+    log: [], result: null, odds: null, committed: false, chatter: state.settings.chatter !== false, says: [],
   };
-  for (const name of rebuys) log(h, `${name} rebuys for ${buyIn}`, 'info');
+  for (const name of rebuys) {
+    log(h, `${name} rebuys for ${buyIn}`, 'info');
+    say(h, seats.findIndex((x) => x.name === name), 'rebuy', {}, 0.5);
+  }
+  seats.forEach((x, i) => {
+    const p = state.players.find((q) => q.id === x.pid);
+    if (p.tiltLeft === 5 && fullProfile(p).tilt > 0.2) say(h, i, 'tilt', {}, 0.8);
+  });
   log(h, `Hand #${h.no} — ${seats[btn].name} has the button`, 'street');
   put(h, seats[sbI], sb);
   seats[sbI].last = `SB ${seats[sbI].bet}`;
@@ -164,7 +187,7 @@ export function legal(h) {
   };
 }
 
-export function botAction(h, profiles) {
+export function botAction(h, profiles, explain = false) {
   const i = h.toAct;
   const s = h.seats[i];
   const L = legal(h);
@@ -183,6 +206,9 @@ export function botAction(h, profiles) {
     aggrPid: h.aggressor >= 0 ? h.seats[h.aggressor].pid : null,
     initiative: h.initiative === i, checked: s.checkedOn === h.street,
     tilted: !!s.tilted, net: s.net || 0, stackRatio: (s.stack + s.bet) / Math.max(1, avgOppStack),
+    explain,
+    aggrName: h.aggressor >= 0 && h.aggressor !== i ? h.seats[h.aggressor].name : null,
+    rivalName: explain ? h.seats.find((o) => o.pid === profiles[i]?.rival)?.name : null,
   }, profiles[i]);
 }
 
@@ -200,19 +226,25 @@ export function applyAction(h, act) {
     else to = Math.min(L.maxTo, Math.max(to, L.minRaiseTo));
   }
   s.acted = true;
+  const extra = h.log ? { seat: i, why: act.why || '' } : null;
+  if (h.log) { s.why = act.why || ''; s.tag = act.tag || ''; }
+  const bettor = h.aggressor >= 0 && h.aggressor !== i ? h.aggressor : -1;
+  const opp = bettor >= 0 ? h.seats[bettor].name : '';
   if (a === 'fold') {
     s.folded = true;
     s.last = 'Fold';
-    log(h, `${s.name} folds`);
+    log(h, `${s.name} folds`, 'act', extra);
+    if (L.toCall >= potTotal(h) * 0.4 && L.toCall >= 6 * h.bb) say(h, i, 'bigfold', { opp }, 0.3);
   } else if (a === 'check') {
     s.last = 'Check';
     s.checkedOn = h.street;
-    log(h, `${s.name} checks`);
+    log(h, `${s.name} checks`, 'act', extra);
   } else if (a === 'call') {
     const amt = put(h, s, L.toCall);
     s.last = `Call ${s.bet}`;
     if (h.street === 0) s.vpip = true;
-    log(h, `${s.name} calls ${amt}${s.allIn ? ' (all-in)' : ''}`);
+    log(h, `${s.name} calls ${amt}${s.allIn ? ' (all-in)' : ''}`, 'act', extra);
+    if (act.tag === 'hero') { s.heroOn = bettor; say(h, i, 'herocall', { opp }, 0.7); }
   } else {
     const wasBet = h.curBet === 0;
     put(h, s, to - s.bet);
@@ -229,7 +261,9 @@ export function applyAction(h, act) {
     h.aggressor = i;
     if (h.street === 0) { s.vpip = true; s.pfr = true; }
     s.last = `${wasBet ? 'Bet' : 'Raise'} ${s.bet}`;
-    log(h, `${s.name} ${wasBet ? 'bets' : 'raises to'} ${s.bet}${s.allIn ? ' (all-in)' : ''}`);
+    log(h, `${s.name} ${wasBet ? 'bets' : 'raises to'} ${s.bet}${s.allIn ? ' (all-in)' : ''}`, 'act', extra);
+    if (act.tag === 'lucky') say(h, i, 'lucky', { hand: handCode(s.hole) }, 0.8);
+    else if (s.allIn) say(h, i, 'allin', { opp: opp || h.seats[(i + 1) % h.seats.length].name }, 0.5);
   }
   advance(h, i);
 }
@@ -260,7 +294,7 @@ export function dealNext(h) {
 
 // One unit of progress: a single player action, or the next card.
 export function step(h, profiles, override) {
-  if (h.phase === 'bet') applyAction(h, override || botAction(h, profiles));
+  if (h.phase === 'bet') applyAction(h, override || botAction(h, profiles, !!h.log));
   else if (h.phase === 'deal') dealNext(h);
 }
 
@@ -273,6 +307,11 @@ function winUncontested(h, winner) {
   const summary = `${winner.name} wins ${pot} uncontested`;
   h.result = { showdown: false, mainWinners: [h.seats.indexOf(winner)], pots: [{ amount: pot, winners: [h.seats.indexOf(winner)], desc: '' }], summary };
   log(h, summary, 'result');
+  const wi = h.seats.indexOf(winner);
+  if (pot >= 8 * h.bb) {
+    const folder = [...h.seats].reverse().find((o) => o.folded && o.total > 0) || h.seats.find((o) => o !== winner);
+    say(h, wi, winner.tag === 'bluff' ? 'steal' : 'win', { opp: folder.name }, winner.tag === 'bluff' ? 0.7 : 0.3);
+  }
 }
 
 function showdown(h) {
@@ -328,6 +367,30 @@ function showdown(h) {
     ? `${h.seats[contested[0].winners[0]].name} wins ${contested.reduce((a, p) => a + p.amount, 0)} with ${contested[0].desc}`
     : lines.filter((l) => !l.includes('uncalled')).join('; ');
   h.result = { showdown: true, mainWinners: outPots[0].winners, pots: outPots, summary };
+  if (h.log) showdownTalk(h, scores);
+}
+
+// Who says what after a showdown: bad beats, hero calls, big pots.
+function showdownTalk(h, scores) {
+  const w = h.result.mainWinners[0];
+  const losers = h.seats.map((s, i) => i).filter((i) => i !== w && !h.seats[i].folded && h.seats[i].won < h.seats[i].total)
+    .sort((a, b) => h.seats[b].total - h.seats[a].total);
+  const L = losers[0];
+  if (L === undefined) return;
+  const turn = (i) => evaluate([...h.seats[i].hole, ...h.board5.slice(0, 4)]);
+  const big = h.seats[L].total >= 15 * h.bb;
+  const W = h.seats[w].name, Ln = h.seats[L].name;
+  if (big && turn(L) > turn(w)) {
+    say(h, L, 'badbeat', { opp: W }, 0.85);
+    say(h, w, 'suckout', { opp: Ln }, 0.6);
+  } else if (h.seats[w].heroOn >= 0) {
+    say(h, w, 'heroRight', { opp: h.seats[h.seats[w].heroOn].name }, 0.85);
+  } else if (h.seats[L].heroOn === w) {
+    say(h, L, 'heroWrong', { opp: W }, 0.7);
+  } else if (big) {
+    say(h, w, 'win', { opp: Ln }, 0.5);
+    say(h, L, 'lose', { opp: W }, 0.3);
+  }
 }
 
 export function pushUndo(state) {

@@ -28,6 +28,11 @@ card while the odds update.
 - Step one action at a time, finish a street, auto-play, or **decide for a player yourself**
   ("what if Ben had called?"). Undo any step. Click any visible card to swap it for another.
 - "Sim 10 hands" fast-forwards a session to watch the bankrolls move.
+- **Why did they do that?** Every bot action comes with its reasoning in plain words ("needs 25% to
+  call, rates it 31%, thinks Cleo bluffs a lot · on tilt"), under the table, in the hand log and on hover.
+- **Table chatter**: players talk after all-ins, hero calls, bad beats, steals and rebuys (turn it off
+  in Edit table).
+- **Session graph** of everyone's net result, hand by hand, in the Bankrolls tab.
 - Keyboard: <kbd>Space</kbd>/<kbd>→</kbd> next step, <kbd>F</kbd> finish street, <kbd>A</kbd> auto-play, <kbd>U</kbd> undo.
 
 The bots only know their own cards and the board — like real players. Personalities are heuristics,

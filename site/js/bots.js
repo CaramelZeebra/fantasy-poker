@@ -1,6 +1,6 @@
 // Player personalities and the decision model the simulated players use.
 // Bots only "know" their own hole cards and the board, like real players.
-import { evaluate, mulberry32, remainingDeck, straightHigh } from './cards.js';
+import { describeScore, evaluate, mulberry32, remainingDeck, straightHigh } from './cards.js';
 
 export const TRAITS = [
   { key: 'loose', label: 'Hands played', min: 0, max: 1, step: 0.01, lo: 'Only premiums', hi: 'Any two cards' },
@@ -322,14 +322,20 @@ export function decide(v, p0, rnd = Math.random) {
   const p = effective(p0, v);
   const allInTo = v.myBet + v.stack;
   const free = v.toCall <= 0;
-  const fold = () => (free ? { a: 'check' } : { a: 'fold' });
-  const call = () => (free ? { a: 'check' } : { a: 'call' });
-  const raise = (to) => {
-    if (!v.canRaise) return call();
+  // With v.explain set, each decision carries a plain-words reason (`why`). The odds playouts
+  // skip it: they make millions of decisions and nobody reads them.
+  const X = !!v.explain;
+  const P = (x) => `${Math.round(clamp(x, 0, 1) * 100)}%`;
+  const mood = X ? moodNotes(p0, p, v) : [];
+  const out = (act, why, tag) => (X ? { ...act, why: [why, ...mood].filter(Boolean).join(' · '), tag } : act);
+  const fold = (why) => (free ? out({ a: 'check' }, why && `${why} — but checking is free`) : out({ a: 'fold' }, why));
+  const call = (why) => out(free ? { a: 'check' } : { a: 'call' }, why);
+  const raise = (to, why, tag) => {
+    if (!v.canRaise) return call(why);
     to = Math.max(Math.round(to), v.minRaiseTo);
     // Commit when the raise would leave too little behind.
     if (to >= allInTo * 0.7) to = allInTo;
-    return { a: 'raise', to: Math.min(to, allInTo) };
+    return out({ a: 'raise', to: Math.min(to, allInTo) }, why, tag);
   };
 
   // Habits of the people at the table, as this player sees them.
@@ -339,29 +345,50 @@ export function decide(v, p0, rnd = Math.random) {
   const bettor = v.aggrProfile ? perceive(v.aggrProfile, p.reads) : null;
   const readBluff = bettor ? bettor.bluff : 0;
   const sizeMult = 0.5 + p.sizing;
+  const who = v.aggrName || 'them';
+  const tableRead = () => (!X || p.reads < 0.3 ? ''
+    : bluffMult > 1.25 ? 'reckons this lot folds too much'
+    : bluffMult < 0.75 ? "knows they won't fold" : '');
+  const bettorRead = () => {
+    if (!X || !bettor || p.reads < 0.3) return '';
+    const t = betStrength(bettor) - S0;
+    return t > 0.12 ? `${who} only plays real hands` : t < -0.15 ? `${who} plays anything` : '';
+  };
 
   if (v.street === 0) {
     const top = preflopTop(v.hole);
     const loves = lovesHand(p, v.hole);
+    const code = X ? handCode(v.hole) : '';
+    const handTxt = X ? `${code} (top ${Math.max(1, Math.round(top * 100))}% of hands)` : '';
     const spread = 0.8 * p.posAware;
     let range = (0.06 + 0.86 * p.loose) * (1 - spread / 2 + spread * v.pos);
     range = clamp(range, 0.03, 1);
+    const plays = X ? `plays the top ${Math.round(range * 100)}%${p.posAware >= 0.6 ? (v.pos >= 0.9 ? ' on the button' : v.pos < 0.35 ? ' from early seats' : '') : ''}` : '';
+    const lovesTxt = loves === true ? `${handTxt} — always plays these` : '';
     const bbLeft = v.stack / Math.max(1, v.bb);
 
     if (p.shove > 0 && bbLeft < 12 && v.canRaise && v.raises < 3) {
       const shoveRange = clamp(range * (1 + 1.5 * p.shove), 0, 1);
-      if ((top <= shoveRange || loves === 'fav') && rnd() < 0.4 + 0.6 * p.shove) return raise(allInTo);
+      if ((top <= shoveRange || loves === 'fav') && rnd() < 0.4 + 0.6 * p.shove) {
+        return raise(allInTo, `Only ${Math.round(bbLeft)} big blinds left — shove or fold, and ${code} is good enough`, 'shove');
+      }
     }
-    if (loves === 'fav' && v.raises < 3) return raise(v.raises ? v.curBet * 3 : v.bb * (2.5 + rnd()));
+    if (loves === 'fav' && v.raises < 3) return raise(v.raises ? v.curBet * 3 : v.bb * (2.5 + rnd()), `${code}! Their lucky hand — always raises it`, 'lucky');
 
     if (v.raises === 0) {
       const raiseRange = range * (0.02 + 0.6 * Math.pow(p.aggr, 1.5));
       const limpers = Math.max(0, Math.round((v.pot - v.bb * 1.5) / v.bb));
-      const open = () => raise(v.bb * (2.2 + 1.3 * p.aggr + rnd() * 0.5) * sizeMult + limpers * v.bb);
-      if (top <= raiseRange) return p.aggr > 0.95 && rnd() < 0.08 ? raise(allInTo) : rnd() < p.limp ? call() : open();
-      if (top <= range || loves) return p.aggr > 0.6 && rnd() < p.aggr - 0.4 && rnd() >= p.limp ? open() : call();
-      if (rnd() < p.bluff * 0.12 * (0.5 + v.pos) * bluffMult) return open();
-      return fold();
+      const open = (why, tag) => raise(v.bb * (2.2 + 1.3 * p.aggr + rnd() * 0.5) * sizeMult + limpers * v.bb, why, tag);
+      if (top <= raiseRange) {
+        if (p.aggr > 0.95 && rnd() < 0.08) return raise(allInTo, `${handTxt} and feeling wild — straight all-in`, 'shove');
+        return rnd() < p.limp ? call(`${handTxt} is a raising hand, but they like to limp`) : open(`${handTxt} — strong enough to raise`);
+      }
+      if (top <= range || loves) {
+        const why = lovesTxt || `${handTxt}; ${plays}`;
+        return p.aggr > 0.6 && rnd() < p.aggr - 0.4 && rnd() >= p.limp ? open(`${why}, and aggressive with it`) : call(why);
+      }
+      if (rnd() < p.bluff * 0.12 * (0.5 + v.pos) * bluffMult) return open(`Junk (${code}), but raising anyway${v.pos >= 0.9 ? ' to steal the blinds' : ''}${tableRead() ? ` — ${tableRead()}` : ''}`, 'bluff');
+      return fold(`${handTxt}; ${plays}`);
     }
     const strictness = clamp((p.callReq - 0.3) / 1.3, 0, 1);
     let cont = range * Math.pow(0.3 + 0.45 * (1 - strictness), v.raises) * (1 + 0.3 * p.hero);
@@ -370,12 +397,16 @@ export function decide(v, p0, rnd = Math.random) {
     if (commit > 0.25) cont *= 1 - 0.6 * Math.min(1, commit) * Math.min(1, p.callReq);
     // Tiny price to see a flop: almost everyone continues.
     const potOdds = v.toCall / (v.pot + v.toCall);
-    if (potOdds < 0.2 + 0.15 * p.loose) cont = Math.max(cont, range * (0.6 + 0.3 * p.loose));
+    const cheap = potOdds < 0.2 + 0.15 * p.loose;
+    if (cheap) cont = Math.max(cont, range * (0.6 + 0.3 * p.loose));
+    const facing = X ? `vs ${v.raises > 1 ? `${v.raises - 1 > 1 ? 'a 4-bet' : 'a re-raise'}` : 'a raise'}${v.aggrName ? ` from ${v.aggrName}` : ''}` : '';
+    const contTxt = X ? `continues with the top ${Math.round(cont * 100)}% ${facing}` : '';
     const reraise = cont * (0.15 + 0.45 * p.aggr) * 2 * p.threeBet;
-    if (top <= reraise && v.raises < 4) return raise(v.curBet * (2.6 + rnd() * 0.6));
-    if (top <= cont || (loves && commit < 0.15)) return call();
-    if (v.raises < 3 && rnd() < p.bluff * 0.06 * bluffMult) return raise(v.curBet * 3);
-    return fold();
+    if (top <= reraise && v.raises < 4) return raise(v.curBet * (2.6 + rnd() * 0.6), `${handTxt} — too good to just call ${facing}`);
+    if (top <= cont) return call([`${handTxt}; ${contTxt}`, cheap && top > range * 0.6 ? 'cheap enough to see a flop' : '', bettorRead()].filter(Boolean).join(', '));
+    if (loves && commit < 0.15) return call(`${lovesTxt}, and the price is small`);
+    if (v.raises < 3 && rnd() < p.bluff * 0.06 * bluffMult) return raise(v.curBet * 3, `Re-raise bluff with ${code}`, 'bluff');
+    return fold([`${handTxt}; only ${contTxt}`, commit > 0.25 ? `would risk ${P(commit)} of their stack` : '', bettorRead()].filter(Boolean).join(', '));
   }
 
   // Postflop.
@@ -386,28 +417,40 @@ export function decide(v, p0, rnd = Math.random) {
   const potBefore = Math.max(1, v.pot - v.toCall);
   const mineScore = evaluate([...v.hole, ...v.board]);
   const mine = mineScore >> 20;
+  const has = X ? describeScore(mineScore) : '';
+  const vsN = v.nOpp > 1 ? `vs ${v.nOpp} players` : '';
+  const strength = X ? `${has}, feels like ${P(E)} to win${vsN ? ` ${vsN}` : ''}` : '';
+  const drawTxt = X && outs >= 4 && v.street < 3 ? `${outs} outs to improve` : '';
 
   if (free) {
-    if (H > 0.9 && rnd() < (1 - p.aggr) * 0.8 * p.slowplay) return { a: 'check' }; // slowplay
+    if (H > 0.9 && rnd() < (1 - p.aggr) * 0.8 * p.slowplay) return out({ a: 'check' }, `${strength} — slowplaying to trap`, 'trap');
     const valueBar = 0.68 - 0.12 * p.aggr - 0.2 * (F0 - avgFold); // thinner value vs stations
     if (H > valueBar && rnd() < 0.35 + 0.65 * p.aggr) {
       let frac = 0.4 + 0.45 * p.aggr * rnd();
-      if (rnd() < p.aggr * 0.12) frac += 0.7; // overbet
-      return raise(v.pot * frac * sizeMult);
+      const over = rnd() < p.aggr * 0.12;
+      if (over) frac += 0.7; // overbet
+      const thin = valueBar < 0.6 && H < 0.68 ? ' — thin, but the callers will pay' : '';
+      return raise(v.pot * frac * sizeMult, `${strength}: betting for value${over ? ', big' : ''}${thin}`, 'value');
     }
     if (v.initiative) {
       const keepGoing = v.street === 1 ? p.cbet : p.barrel;
-      if (rnd() < Math.max(0, keepGoing - 0.5) * 1.4 * Math.min(1.5, bluffMult)) return raise(v.pot * (0.33 + 0.3 * rnd()) * sizeMult);
-      if (keepGoing < 0.5 && rnd() < (0.5 - keepGoing) * 2) return { a: 'check' };
+      if (rnd() < Math.max(0, keepGoing - 0.5) * 1.4 * Math.min(1.5, bluffMult)) {
+        return raise(v.pot * (0.33 + 0.3 * rnd()) * sizeMult, `${has}, but led the betting last street, so keeps the pressure on`, H < 0.5 ? 'bluff' : 'value');
+      }
+      if (keepGoing < 0.5 && rnd() < (0.5 - keepGoing) * 2) return out({ a: 'check' }, `${strength}; gives up after the raise didn't take it`);
     }
-    if (outs >= 8 && v.street < 3 && rnd() < (p.aggr * 0.35 + p.bluff * 0.35) * bluffMult) return raise(v.pot * (0.45 + 0.3 * rnd()) * sizeMult);
-    if (rnd() < ((p.bluff * 0.32) / Math.sqrt(v.nOpp)) * bluffMult) return raise(v.pot * (0.4 + 0.35 * rnd()) * sizeMult);
-    return { a: 'check' };
+    if (outs >= 8 && v.street < 3 && rnd() < (p.aggr * 0.35 + p.bluff * 0.35) * bluffMult) {
+      return raise(v.pot * (0.45 + 0.3 * rnd()) * sizeMult, `Semi-bluff: ${has} with ${outs} outs — can win now or hit later`, 'semi');
+    }
+    if (rnd() < ((p.bluff * 0.32) / Math.sqrt(v.nOpp)) * bluffMult) {
+      return raise(v.pot * (0.4 + 0.35 * rnd()) * sizeMult, [`Bluff! ${has}, but betting like it's strong`, tableRead()].filter(Boolean).join(' — '), 'bluff');
+    }
+    return out({ a: 'check' }, [`${strength}; not worth a bet`, drawTxt].filter(Boolean).join(', '));
   }
 
   if (v.checked && p.checkRaise > 0 && v.raises < 3) {
-    if (H > 0.7 && rnd() < p.checkRaise) return raise(v.curBet * (2.8 + rnd() * 0.6));
-    if (rnd() < p.checkRaise * p.bluff * 0.3 * bluffMult) return raise(v.curBet * 3);
+    if (H > 0.7 && rnd() < p.checkRaise) return raise(v.curBet * (2.8 + rnd() * 0.6), `Check-raise! ${strength} — checked to set the trap`, 'trap');
+    if (rnd() < p.checkRaise * p.bluff * 0.3 * bluffMult) return raise(v.curBet * 3, `Check-raise bluff with ${has}`, 'bluff');
   }
 
   const potOdds = v.toCall / (v.pot + v.toCall);
@@ -419,16 +462,35 @@ export function decide(v, p0, rnd = Math.random) {
   // A bet from a tight player means more than one from a maniac.
   // (Equity is measured against random hands; a nit's bet narrows that a lot, a maniac's barely.)
   const rangePow = bettor ? clamp(1 + 3 * (betStrength(bettor) - S0), 0.5, 2.2) : 1;
-  const scare = mine >= 4 ? 0 : p.scare * 0.3 * boardScare(v.board);
+  const scareLvl = boardScare(v.board);
+  const scare = mine >= 4 ? 0 : p.scare * 0.3 * scareLvl;
   const eff = Math.pow(E, rangePow) * (1 - discount) * (1 - scare) + drawBoost;
+  const math = X ? [
+    `needs ${P(need)} to call, rates it ${P(eff)}`,
+    bettorRead(),
+    readBluff > 0.4 && p.reads >= 0.3 ? `thinks ${who} bluffs a lot` : '',
+    scare > 0.05 ? 'scared of this board' : '',
+    drawBoost > 0.05 ? `chasing ${outs} outs` : '',
+  ].filter(Boolean).join(', ') : '';
 
-  if (H > 0.85 && v.raises < 4 && rnd() < p.aggr * 0.8) return raise(v.curBet * (2.5 + rnd() * 0.7));
-  if (eff >= need) return call();
-  if (p.sticky > 0 && topPairPlus(v.hole, v.board, mineScore) && rnd() < p.sticky) return call();
+  if (H > 0.85 && v.raises < 4 && rnd() < p.aggr * 0.8) return raise(v.curBet * (2.5 + rnd() * 0.7), `${strength} — raising for value`, 'value');
+  if (eff >= need) return call(`${has}: ${math}`);
+  if (p.sticky > 0 && topPairPlus(v.hole, v.board, mineScore) && rnd() < p.sticky) return call(`${has} — just can't let it go (${math})`, 'sticky');
   const boardOnly = evaluate(v.board) >> 20;
-  if (mine > boardOnly && rnd() < p.hero * 0.35) return call(); // "you're bluffing"
-  if (v.raises < 3 && rnd() < p.bluff * 0.07 * bluffMult) return raise(v.curBet * 2.8);
-  return fold();
+  if (mine > boardOnly && rnd() < p.hero * 0.35) return call(`Hero call! ${has} and doesn't believe ${who} (${math})`, 'hero');
+  if (v.raises < 3 && rnd() < p.bluff * 0.07 * bluffMult) return raise(v.curBet * 2.8, `Raise bluff with ${has} — trying to push ${who} off`, 'bluff');
+  return fold(`${has}: ${math}`);
+}
+
+// Why this player isn't quite themselves right now.
+function moodNotes(base, p, v) {
+  const n = [];
+  if (v.tilted && p.tilt > 0) n.push('on tilt after a big loss');
+  if (v.net < -0.5 && p.scared > 0.2) n.push('playing scared while down');
+  if (v.net > 0.5 && p.heater > 0.2) n.push('feeling cocky while up');
+  if (v.stackRatio > 1.6 && p.bully > 0.2) n.push('pushing the short stacks around');
+  if (p.rival && p.rivalry > 0.2 && v.oppPids?.includes(p.rival)) n.push(`grudge match with ${v.rivalName || 'their rival'}`);
+  return n;
 }
 
 // Top pair or better that actually uses a hole card.

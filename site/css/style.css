@@ -123,7 +123,7 @@ button, input, select { font: inherit; color: inherit; }
 .board { display: flex; gap: 7px; perspective: 700px; }
 .pot { background: rgba(0, 0, 0, .35); padding: 4px 14px; border-radius: 999px; font-size: 15px; }
 .pot b { color: var(--gold); }
-.result {
+.center .result {
   background: rgba(15, 20, 18, .85); border: 1px solid var(--gold-2); color: var(--text);
   padding: 8px 14px; border-radius: 10px; font-size: 14px; max-width: 100%;
   animation: pop .35s ease-out;
@@ -316,7 +316,7 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
   .felt { border-radius: 20px; }
   .center { position: relative; left: auto; top: auto; transform: none; width: 100%; height: 190px; justify-content: center; }
   .seats { position: static; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .seat { position: static; transform: none; width: auto; }
+  .seat { position: relative; left: auto; top: auto; transform: none; width: auto; }
   .board { gap: 5px; }
   .controls {
     position: sticky; bottom: 0; z-index: 10; margin: 0 -16px; padding: 10px 16px;
@@ -365,3 +365,52 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 .av-pick.emoji { font-size: 18px; }
 .av-pick:hover { border-color: var(--line); }
 .av-pick.on { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(227, 184, 102, .25); }
+
+/* ---------- reasons & chatter ---------- */
+.narration {
+  min-height: 42px; padding: 8px 12px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line);
+  font-size: 14px; animation: say .3s ease-out; display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline;
+}
+.narration.empty { visibility: hidden; }
+.why-inline { color: var(--muted); font-size: 13px; }
+.log .why { color: var(--muted); font-size: 12.5px; padding-left: 14px; position: relative; margin-top: 1px; }
+.log .why::before { content: '↳'; position: absolute; left: 0; }
+.log li.chat { color: var(--gold); font-style: italic; }
+.log-opt { margin-bottom: 8px; }
+.say {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
+  width: max-content; max-width: 210px; padding: 6px 10px; border-radius: 12px;
+  background: var(--card); color: #1c1a16; font-size: 12.5px; font-weight: 500; line-height: 1.3; text-align: center;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .45); z-index: 5; pointer-events: none; animation: bubble .35s cubic-bezier(.2, .9, .3, 1.3);
+}
+.say::after { content: ''; position: absolute; left: 50%; top: 100%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: var(--card); }
+.last[title] { cursor: help; text-decoration: underline dotted rgba(149, 163, 155, .5); text-underline-offset: 2px; }
+@keyframes bubble { from { transform: translateX(-50%) translateY(6px) scale(.85); opacity: 0; } }
+
+/* ---------- session graph ---------- */
+.chart { margin: 0 0 14px; max-width: 520px; }
+.chart figcaption { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+.chart-box { position: relative; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .grid { stroke: rgba(149, 163, 155, .14); stroke-width: 1; }
+.chart .grid.zero { stroke: rgba(236, 231, 218, .4); }
+.chart .tick { fill: var(--muted); font-size: 10px; text-anchor: end; }
+.chart .tick.x { text-anchor: start; }
+.chart .tick.end-x { text-anchor: end; }
+.chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; transition: opacity .2s; }
+.chart .dim { opacity: .18; }
+.chart .end text { fill: var(--text); font-size: 10.5px; }
+.chart .end circle, .chart .pt { stroke: var(--bg-2); stroke-width: 2; }
+.chart .cross { stroke: rgba(236, 231, 218, .35); stroke-width: 1; }
+.chart .hit { fill: transparent; cursor: crosshair; }
+.chart .tip {
+  position: absolute; top: 4px; transform: translateX(-50%); pointer-events: none; z-index: 3;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px; min-width: 130px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .45);
+}
+.chart .tip div { display: flex; align-items: center; gap: 6px; }
+.chart .tip span { margin-left: auto; padding-left: 10px; }
+.chart .tip i, .swatch { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.swatch { margin-right: 6px; vertical-align: 1px; }
+.grid.money tr.hi td { background: rgba(255, 255, 255, .04); }
+.empty.small { padding: 12px; font-size: 13px; }
