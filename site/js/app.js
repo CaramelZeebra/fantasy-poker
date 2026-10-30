@@ -4,7 +4,7 @@ import {
   createTable, startHand, step, profilesFor, potTotal, legal, applyAction,
   pushUndo, swapCard, newPlayer, streetName, fullProfile,
 } from './engine.js';
-import { PRESETS, TRAITS, ADVANCED, ADV_DEFAULTS, advChanged, presetInfo, preflopTop } from './bots.js';
+import { PRESETS, TRAITS, ADVANCED, ADV_DEFAULTS, HAND_GRID, advChanged, presetInfo, preflopTop } from './bots.js';
 import { RANKS, SUIT_SYMBOLS, SUIT_NAMES, cardLabel, describeScore, evaluate } from './cards.js';
 import { morph } from './morph.js';
 import { computeOdds as computeOddsHere } from './odds.js';
@@ -31,6 +31,8 @@ const ui = {
 const avatars = new Set();
 let store, state = null;
 
+// Lucky hands as a set of chart codes; an older bare 'K9' means both K9s and K9o.
+const favSet = (v) => new Set((v ? v.split(',') : []).flatMap((f) => (f.length === 2 && f[0] !== f[1] ? [`${f}s`, `${f}o`] : [f])));
 const EMOJI_PICKS = ['🍺', '🦈', '🐢', '🤡', '👑', '🎩', '🐍', '🧊', '💎', '🌶️', '🎲', '🃏', '🤠', '👻', '🦊', '🐻', '🧠', '💸', '😎', '🥶', '🍀', '🐙'];
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 
@@ -550,6 +552,22 @@ function openEditor() {
     if (t.kind === 'toggle') {
       return `<label class="adv-toggle${changed}"><input type="checkbox" data-adv="${t.key}" ${v ? 'checked' : ''}> <span>${esc(t.label)}${hint}</span></label>`;
     }
+    if (t.kind === 'hands') {
+      const picked = favSet(v);
+      return `<div class="adv-hands${changed}">
+        <span>${esc(t.label)}${hint}</span>
+        <div class="hands-summary">
+          <span class="${picked.size ? '' : 'muted'}">${picked.size ? [...picked].join(', ') : 'None'}</span>
+          <button type="button" class="chip-btn" data-x="favGrid">${p.favOpen ? 'Done' : 'Choose…'}</button>
+          ${picked.size ? '<button type="button" class="chip-btn" data-x="favClear">Clear</button>' : ''}
+        </div>
+        ${p.favOpen ? `<div class="hand-grid" role="group" aria-label="Lucky hands">
+          ${HAND_GRID.flat().map((c) => `<button type="button" class="hg ${c.length === 2 ? 'pair' : c[2] === 's' ? 'suited' : 'off'}${picked.has(c) ? ' on' : ''}"
+            data-x="fav" data-v="${c}" aria-pressed="${picked.has(c)}" title="${c.length === 2 ? `Pocket ${c[0]}s` : `${c[0]}-${c[1]} ${c[2] === 's' ? 'suited' : 'offsuit'}`}">${c}</button>`).join('')}
+        </div>
+        <p class="muted hg-key">Top right: suited · bottom left: offsuit · diagonal: pairs</p>` : ''}
+      </div>`;
+    }
     if (t.kind === 'select' || t.kind === 'player') {
       const opts = t.kind === 'select' ? t.options
         : [['', 'Nobody'], ...ed.players.filter((q) => q.id !== p.id).map((q) => [q.id, q.name])];
@@ -683,6 +701,14 @@ function openEditor() {
     if (x === 'tune') p.open = !p.open;
     if (x === 'adv') p.advOpen = !p.advOpen;
     if (x === 'advReset') Object.assign(p.profile, ADV_DEFAULTS);
+    if (x === 'favGrid') p.favOpen = !p.favOpen;
+    if (x === 'favClear' || x === 'fav') {
+      const picked = favSet(p.profile.fav);
+      if (x === 'favClear') picked.clear();
+      else if (!picked.delete(e.target.closest('[data-v]').dataset.v)) picked.add(e.target.closest('[data-v]').dataset.v);
+      p.profile.fav = [...picked].join(',');
+      toCustom(p);
+    }
     if (x === 'emoji') p.emoji = p.emoji === e.target.dataset.v ? '' : e.target.dataset.v;
     if (x === 'rebuy') p.rebuy += ed.settings.buyIn;
     if (x === 'remove') ed.players.splice(+row.dataset.i, 1);

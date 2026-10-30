@@ -342,3 +342,16 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 .adv .trait .t-label .muted { font-size: 11.5px; }
 .adv .changed > span:first-of-type, .adv .changed .t-label { color: var(--gold); }
 .adv-foot { grid-column: 1 / -1; }
+.adv-hands { display: grid; gap: 4px; font-size: 13px; }
+.hands-summary { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-weight: 700; }
+.hand-grid { display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; margin-top: 4px; max-width: 420px; }
+.hg {
+  border: 0; border-radius: 3px; padding: 0; aspect-ratio: 1; min-width: 0; cursor: pointer;
+  font-size: 9.5px; font-weight: 700; letter-spacing: -.03em; color: var(--muted); background: rgba(255, 255, 255, .05);
+}
+.hg.suited { background: rgba(127, 184, 255, .09); }
+.hg.pair { background: rgba(227, 184, 102, .13); }
+.hg:hover { outline: 1px solid var(--gold-2); color: var(--text); }
+.hg.on { background: var(--gold); color: #1a1408; }
+.hg-key { margin: 2px 0 0; font-size: 11.5px; }
+.adv-group:has(.hand-grid) { grid-column: 1 / -1; }

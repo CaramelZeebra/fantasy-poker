@@ -62,8 +62,16 @@ export const presetInfo = (key) =>
 // so a profile without these keys plays exactly as before. Reads use what friends know about
 // each other's habits (their personality), never the cards they hold.
 
-export const FAV_HANDS = [['', 'None'], ['72', '7-2'], ['T2', '10-2'], ['J4', 'J-4'], ['Q7', 'Q-7'], ['95', '9-5'],
-  ['32', '3-2'], ['K9', 'K-9'], ['A5', 'A-5'], ['83', '8-3'], ['J7', 'J-7'], ['QJ', 'Q-J']];
+// Hand codes as on a range chart: 'AA', 'AKs' (suited), '72o' (offsuit).
+const RANKS_HI = 'AKQJT98765432';
+export const handCode = (hole) => {
+  const [a, b] = hole;
+  const hi = Math.max(a >> 2, b >> 2), lo = Math.min(a >> 2, b >> 2);
+  const R = '23456789TJQKA';
+  return hi === lo ? R[hi] + R[lo] : R[hi] + R[lo] + ((a & 3) === (b & 3) ? 's' : 'o');
+};
+export const HAND_GRID = [...RANKS_HI].map((r1, i) => [...RANKS_HI].map((r2, j) =>
+  (i === j ? r1 + r2 : i < j ? r1 + r2 + 's' : r2 + r1 + 'o')));
 
 export const ADVANCED = [
   { group: 'Starting hands', items: [
@@ -72,7 +80,7 @@ export const ADVANCED = [
     { key: 'anyPair', kind: 'toggle', label: 'Always plays pocket pairs', hint: 'hoping to hit a set' },
     { key: 'anyConn', kind: 'toggle', label: 'Plays any connected cards', hint: '7-6, J-10…' },
     { key: 'anyFace', kind: 'toggle', label: 'Plays any two high cards', hint: '10 or better' },
-    { key: 'fav', kind: 'select', label: 'Lucky hand', hint: 'always raises it', options: FAV_HANDS },
+    { key: 'fav', kind: 'hands', label: 'Lucky hands', hint: 'always raises them' },
     { key: 'limp', kind: 'range', def: 0, label: 'Limps instead of raising', lo: 'Always raises', hi: 'Always limps' },
     { key: 'threeBet', kind: 'range', def: 0.5, label: 'Re-raises before the flop', lo: 'Almost never', hi: 'Constantly' },
     { key: 'posAware', kind: 'range', def: 0.5, label: 'Plays position', lo: 'Ignores seat', hi: 'Lives on the button' },
@@ -229,7 +237,6 @@ export function drawOuts(hole, board) {
 // ---------- the decision ----------
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-const RANK_CHARS = '23456789TJQKA';
 
 // What a player "knows" about someone's habits: their real personality, blurred toward an
 // average player by how well they read people.
@@ -280,8 +287,9 @@ function lovesHand(q, hole) {
   const r1 = a >> 2, r2 = b >> 2, hi = Math.max(r1, r2), lo = Math.min(r1, r2);
   const pair = r1 === r2;
   if (q.fav) {
-    const f1 = RANK_CHARS.indexOf(q.fav[0]), f2 = RANK_CHARS.indexOf(q.fav[1]);
-    if (Math.max(f1, f2) === hi && Math.min(f1, f2) === lo) return 'fav';
+    // Comma-separated codes; a bare 'K9' (older saves) means suited or not.
+    const code = handCode(hole);
+    if (q.fav.split(',').some((f) => f === code || (f.length === 2 && f === code.slice(0, 2)))) return 'fav';
   }
   return (q.anySuited && (a & 3) === (b & 3)) || (q.anyAce && hi === 12) || (q.anyPair && pair)
     || (q.anyConn && !pair && (hi - lo === 1 || (hi === 12 && lo === 0))) || (q.anyFace && lo >= 8);
