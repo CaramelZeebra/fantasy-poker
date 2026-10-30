@@ -2,11 +2,12 @@ import { POLL_MS } from './config.js';
 import { makeStore, ConflictError } from './store.js';
 import {
   createTable, startHand, step, profilesFor, potTotal, legal, applyAction,
-  pushUndo, swapCard, newPlayer, streetName, fullProfile, assignHues,
+  pushUndo, swapCard, newPlayer, streetName, fullProfile, assignHues, botView,
 } from './engine.js';
 import { PRESETS, TRAITS, ADVANCED, ADV_DEFAULTS, HAND_GRID, advChanged, presetInfo, preflopTop } from './bots.js';
 import { RANKS, SUIT_SYMBOLS, SUIT_NAMES, cardLabel, describeScore, evaluate } from './cards.js';
 import { morph } from './morph.js';
+import { coach, LESSONS } from './trainer.js';
 import { computeOdds as computeOddsHere } from './odds.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -27,6 +28,8 @@ const ui = {
   odds: { key: undefined },
   prevOdds: null,
   trail: { no: null, rows: {} },
+  teach: lsGet('teach', 'off'),
+  teachNote: '',
   whys: ({ 1: 'full', 0: 'off' })[lsGet('whys', 'full')] || lsGet('whys', 'full'), // off | short | full
 };
 const avatars = new Set();
@@ -244,13 +247,64 @@ const act = {
   }),
   decide(a) {
     const to = a === 'raise' ? +($('#raise-to')?.value || 0) : 0;
+    const lesson = ui.teach !== 'off' && state?.hand?.phase === 'bet' ? teachFor(a) : null;
     mutate((d) => {
       if (!d.hand || d.hand.phase !== 'bet') return false;
       pushUndo(d);
-      applyAction(d.hand, { a, to, why: 'Your call — decided by hand' });
+      const i = d.hand.toAct;
+      applyAction(d.hand, { a, to, why: lesson ? `Coached: ${lesson.headline}` : 'Your call — decided by hand' });
+      if (lesson) d.hand.log.push({ kind: 'coach', text: lesson.logText, seat: i });
     });
+    // The lesson itself is a table edit: it merges with whatever else changed meanwhile.
+    if (lesson?.changes.length) mutate((d) => applyLesson(d, lesson), { rebase: true });
+    if (lesson) toast(lesson.toastText);
+    ui.teachNote = '';
   },
 };
+
+// ---------- coaching ----------
+
+// Work out what an override should teach the player to act, before the move is made.
+function teachFor(a) {
+  const h = state.hand, i = h.toAct, st = h.seats[i];
+  const pr = profilesFor(state);
+  const free = legal(h).toCall <= 0;
+  const target = a === 'call' && free ? 'check' : a;
+  const { _style, ...profile } = pr[i];
+  const r = coach(botView(h, pr), profile, target, ui.teach);
+  const verb = { fold: 'fold', check: 'check', call: 'call', raise: free ? 'bet' : 'raise' }[target];
+  const note = ui.teachNote.trim();
+  const changed = r.changes.map((c) => `${c.label} ${c.to > c.from ? '↑' : '↓'} ${fmtTrait(c.key, c.from)} → ${fmtTrait(c.key, c.to)}`);
+  const odds = `${pctWhole(r.before)} → ${pctWhole(r.after)} chance to ${verb} here`;
+  const area = LESSONS[ui.teach]?.label.toLowerCase();
+  return {
+    pid: st.pid,
+    changes: r.changes,
+    headline: `you'd ${verb}${note ? ` — “${note}”` : ''}`,
+    logText: `🎓 ${st.name} coached to ${verb}${note ? ` (“${note}”)` : ''}: ${changed.length ? `${changed.join(', ')} · ${odds}` : `nothing about ${area} would change this — left as is`}`,
+    toastText: changed.length ? `${st.name} learned: ${changed.join(', ')} (${odds})` : `Nothing about ${area} would make ${st.name} ${verb} here — no change.`,
+  };
+}
+const pctWhole = (x) => `${Math.round(x * 100)}%`;
+const fmtTrait = (k, v) => (k === 'callReq' ? `${v.toFixed(2)}×` : Math.round(v * 100));
+
+// Apply a lesson as relative nudges, so it stacks with other edits made meanwhile.
+function applyLesson(d, lesson) {
+  const p = d.players.find((q) => q.id === lesson.pid);
+  if (!p) return false;
+  const prof = fullProfile(p);
+  for (const c of lesson.changes) {
+    const [lo, hi] = c.key === 'callReq' ? [0.3, 1.6] : [0, 1];
+    prof[c.key] = +Math.min(hi, Math.max(lo, prof[c.key] + (c.to - c.from))).toFixed(3);
+  }
+  p.profile = prof;
+  // A coached preset becomes custom but keeps its name, look and blurb.
+  if (p.preset in PRESETS) {
+    const base = PRESETS[p.preset];
+    p.emoji ||= base.emoji; p.label ||= base.name; p.tagline ||= base.desc; p.avatar ||= p.preset;
+    p.preset = 'custom';
+  }
+}
 
 function newHand(d) {
   const err = startHand(d);
@@ -439,6 +493,14 @@ function renderControls(s) {
           <button class="chip-btn" data-size="${size(1)}">Pot</button>
           <button class="chip-btn" data-size="${L.maxTo}">All-in</button>
         </span>` : ''}
+      <span class="teach">
+        <label title="When you override, nudge this player's traits toward your choice in spots like this">🎓 Teach
+          <select id="teach-lesson">
+            <option value="off" ${ui.teach === 'off' ? 'selected' : ''}>No — just this once</option>
+            ${Object.entries(LESSONS).map(([k, l]) => `<option value="${k}" ${ui.teach === k ? 'selected' : ''}>${l.label}</option>`).join('')}
+          </select></label>
+        ${ui.teach !== 'off' ? `<input id="teach-note" placeholder="Why? (optional, goes in the log)" maxlength="80" value="${esc(ui.teachNote)}">` : ''}
+      </span>
     </div>`;
   }
   morph($('#controls'), html);
@@ -986,6 +1048,8 @@ $('#controls').addEventListener('click', (e) => {
 });
 $('#controls').addEventListener('input', (e) => {
   if (e.target.id === 'raise-to') ui.raiseTo = +e.target.value;
+  if (e.target.id === 'teach-lesson') { ui.teach = e.target.value; lsSet('teach', ui.teach); render(); }
+  if (e.target.id === 'teach-note') ui.teachNote = e.target.value;
   if (e.target.id === 'speed') { ui.speed = +e.target.value; lsSet('speed', ui.speed); }
 });
 $('#table').addEventListener('click', (e) => {

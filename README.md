@@ -28,6 +28,9 @@ card while the odds update.
 - Step one action at a time, finish a street, auto-play, or **decide for a player yourself**
   ("what if Ben had called?"). Undo any step. Click any visible card to swap it for another.
 - "Sim 10 hands" fast-forwards a session to watch the bankrolls move.
+- **Coaching**: when you decide for a player, pick what you disagree about (hand selection, trusting
+  bets, bluffing, draws, aggression, scary boards, or "work it out") and their traits are nudged so
+  that in spots like this they'd lean toward your choice. Small steps, logged in the hand history.
 - **Bench**: take a player off the table without losing them. They keep their personality, look,
   chips and stats, and can be brought back any time from Edit table.
 - **Why did they do that?** Every bot action comes with its reasoning in plain words ("needs 25% to

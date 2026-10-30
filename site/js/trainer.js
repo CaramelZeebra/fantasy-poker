@@ -1,0 +1,72 @@
+// Coaching: when you override a bot, nudge its traits so that in this exact spot it would
+// lean toward what you chose. It's a small, numerical back-propagation: estimate how likely
+// the bot is to pick your action, see which traits move that likelihood (by trying each one
+// a little higher and lower), and step the traits that way. Steps are capped so one lesson
+// shifts a player a little, not completely.
+import { decide, TRAITS, ADVANCED } from './bots.js';
+import { mulberry32 } from './cards.js';
+
+// What the lesson is about decides which traits are allowed to move.
+export const LESSONS = {
+  auto: { label: 'Work it out', keys: ['loose', 'aggr', 'bluff', 'chase', 'callReq', 'hero', 'posAware', 'threeBet', 'cbet', 'barrel', 'checkRaise', 'sticky', 'scare'] },
+  hands: { label: 'Which hands to play', keys: ['loose', 'posAware', 'limp', 'threeBet'] },
+  bets: { label: 'How much to trust bets', keys: ['callReq', 'hero', 'reads', 'sticky'] },
+  bluff: { label: 'Bluffing', keys: ['bluff'] },
+  draws: { label: 'Chasing draws', keys: ['chase'] },
+  aggro: { label: 'Betting & raising', keys: ['aggr', 'cbet', 'barrel', 'checkRaise', 'slowplay'] },
+  fear: { label: 'Scary boards', keys: ['scare'] },
+};
+
+const ALL = [...TRAITS, ...ADVANCED.flatMap((g) => g.items).filter((t) => t.kind === 'range').map((t) => ({ ...t, min: 0, max: 1 }))];
+const spec = (k) => ALL.find((t) => t.key === k);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const SAMPLES = 160;
+const STEP = 0.05;   // largest move per round, as a share of the trait's range
+const ROUNDS = 3;
+
+// How often this profile picks `target` here. The same random stream every time, so two
+// profiles are compared on identical luck and small differences show up cleanly.
+function likelihood(v, profile, target) {
+  const rnd = mulberry32(0xc0ac4);
+  let hit = 0;
+  for (let i = 0; i < SAMPLES; i++) if (decide(v, profile, rnd).a === target) hit++;
+  return hit / SAMPLES;
+}
+
+export function coach(v, profile, target, lesson = 'auto') {
+  const keys = (LESSONS[lesson] || LESSONS.auto).keys.filter((k) => spec(k) && typeof profile[k] === 'number');
+  const before = likelihood(v, profile, target);
+  let cur = { ...profile };
+  let now = before;
+  for (let round = 0; round < ROUNDS && now < 0.9; round++) {
+    const moves = {};
+    let any = false;
+    for (const k of keys) {
+      const { min, max } = spec(k);
+      const span = max - min;
+      // Probe close first; if the decision doesn't budge, look further out to find which
+      // way this trait pushes. (Far from the tipping point, small nudges change nothing.)
+      let grad = 0;
+      for (const reach of [0.08, 0.25, 0.6]) {
+        const up = clamp(cur[k] + reach * span, min, max), down = clamp(cur[k] - reach * span, min, max);
+        if (up === down) break;
+        grad = (likelihood(v, { ...cur, [k]: up }, target) - likelihood(v, { ...cur, [k]: down }, target)) / ((up - down) / span);
+        if (Math.abs(grad) >= 0.05) break;
+      }
+      if (Math.abs(grad) < 0.05) continue;
+      moves[k] = clamp(grad * 0.25, -STEP, STEP) * span;
+      if (Math.abs(moves[k]) < 0.02 * span) moves[k] = Math.sign(grad) * 0.02 * span;
+      any = true;
+    }
+    if (!any) break;
+    const next = { ...cur };
+    for (const k in moves) { const { min, max } = spec(k); next[k] = +clamp(cur[k] + moves[k], min, max).toFixed(3); }
+    const p = likelihood(v, next, target);
+    if (p < now) break; // the nudge didn't help; keep what we had
+    cur = next;
+    now = p;
+  }
+  const changes = keys.filter((k) => Math.abs(cur[k] - profile[k]) >= 0.005)
+    .map((k) => ({ key: k, label: spec(k).label, from: profile[k], to: cur[k] }));
+  return { changes, before, after: now, profile: cur };
+}

@@ -207,6 +207,11 @@ export function legal(h) {
 }
 
 export function botAction(h, profiles, explain = false) {
+  return decide(botView(h, profiles, explain), profiles[h.toAct]);
+}
+
+// Everything the player to act can see, in the shape decide() takes.
+export function botView(h, profiles, explain = false) {
   const i = h.toAct;
   const s = h.seats[i];
   const L = legal(h);
@@ -215,7 +220,7 @@ export function botAction(h, profiles, explain = false) {
   const pos = dist === 0 ? 1 : dist <= 2 ? 0.3 : (dist - 2) / Math.max(1, n - 2);
   const opps = h.seats.map((o, j) => j).filter((j) => j !== i && !h.seats[j].folded);
   const avgOppStack = opps.reduce((a, j) => a + h.seats[j].stack + h.seats[j].bet, 0) / Math.max(1, opps.length);
-  return decide({
+  return {
     street: h.street, hole: s.hole, board: h.board5.slice(0, h.shown),
     pot: potTotal(h), toCall: L.toCall, curBet: h.curBet, myBet: s.bet, stack: s.stack,
     minRaiseTo: L.minRaiseTo, bb: h.bb, nOpp: opps.length,
@@ -230,7 +235,7 @@ export function botAction(h, profiles, explain = false) {
     inPos: !h.seats.some((o, j) => j !== i && !o.folded && !o.allIn && ((j - h.btn + n) % n || n) > (dist || n)),
     aggrName: h.aggressor >= 0 && h.aggressor !== i ? h.seats[h.aggressor].name : null,
     rivalName: explain ? h.seats.find((o) => o.pid === profiles[i]?.rival)?.name : null,
-  }, profiles[i]);
+  };
 }
 
 // Where a seat sits, in words, for the bots' explanations.

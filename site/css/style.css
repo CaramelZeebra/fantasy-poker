@@ -433,3 +433,9 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 .bench { display: grid; gap: 6px; }
 .bench-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 10px; }
 .bench-row .who { min-width: 0; }
+
+/* ---------- coaching ---------- */
+.teach { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; font-size: 13px; color: var(--muted); }
+.teach select, .teach input { background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; color: var(--text); }
+.teach input { width: 230px; max-width: 100%; }
+.log li.coach { color: #b9a6f5; font-size: 13px; }
