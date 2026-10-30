@@ -2,7 +2,7 @@ import { POLL_MS } from './config.js';
 import { makeStore, ConflictError } from './store.js';
 import {
   createTable, startHand, step, profilesFor, potTotal, legal, applyAction,
-  pushUndo, swapCard, newPlayer, streetName, fullProfile,
+  pushUndo, swapCard, newPlayer, streetName, fullProfile, assignHues,
 } from './engine.js';
 import { PRESETS, TRAITS, ADVANCED, ADV_DEFAULTS, HAND_GRID, advChanged, presetInfo, preflopTop } from './bots.js';
 import { RANKS, SUIT_SYMBOLS, SUIT_NAMES, cardLabel, describeScore, evaluate } from './cards.js';
@@ -490,12 +490,17 @@ function logPanel(s) {
 // Validated (dark surface, adjacent pairs) categorical order; colour follows the player's seat
 // in the player list, so it never changes when someone else is added or busts.
 const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767', '#95a39b'];
-const colorOf = (s, pid) => SERIES[Math.max(0, s.players.findIndex((p) => p.id === pid)) % SERIES.length];
+const everyone = (s) => [...s.players, ...(s.bench || [])];
+const colorOf = (s, pid) => {
+  const all = everyone(s);
+  const p = all.find((q) => q.id === pid);
+  return SERIES[(p?.hue ?? Math.max(0, all.indexOf(p))) % SERIES.length];
+};
 
 function bankrollChart(s) {
   const track = s.track || [];
   if (track.length < 2) return '<p class="empty small">The session graph appears after a couple of hands.</p>';
-  const players = s.players.filter((p) => track.some((t) => p.id in t.nets));
+  const players = everyone(s).filter((p) => track.some((t) => p.id in t.nets));
   const W = 340, H = 190, L = 44, R = 62, T = 10, B = 22;
   const vals = track.flatMap((t) => players.map((p) => t.nets[p.id] ?? 0));
   let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
@@ -553,7 +558,8 @@ function niceStep(raw) {
 
 function moneyPanel(s) {
   const live = new Map((s.hand && !s.hand.committed ? s.hand.seats : []).map((st) => [st.pid, st]));
-  const rows = s.players.map((p) => {
+  const benched = new Set((s.bench || []).map((p) => p.id));
+  const rows = everyone(s).map((p) => {
     const st = live.get(p.id);
     const stack = st ? st.stack + (s.hand.phase === 'done' ? 0 : st.total) : p.stack;
     return { p, stack, net: stack - p.bought };
@@ -561,8 +567,8 @@ function moneyPanel(s) {
   const per = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
   return `${bankrollChart(s)}<table class="grid money">
     <tr><th>Player</th><th>Stack</th><th>Bought in</th><th>Net</th><th title="Voluntarily put money in pot">VPIP</th><th title="Preflop raise">PFR</th><th>Won</th></tr>
-    ${rows.map(({ p, stack, net }) => `<tr class="${p.out ? 'folded' : ''}${ui.hiPid === p.id ? ' hi' : ''}" data-key="m${p.id}" data-pid="${p.id}">
-      <td title="${esc(infoOf(p).desc)}"><i class="swatch" style="background:${colorOf(s, p.id)}"></i>${esc(infoOf(p).emoji)} ${esc(p.name)}</td><td ${moneyNum(stack)}>${money(stack)}</td><td>${money(p.bought)}</td>
+    ${rows.map(({ p, stack, net }) => `<tr class="${p.out || benched.has(p.id) ? 'folded' : ''}${ui.hiPid === p.id ? ' hi' : ''}" data-key="m${p.id}" data-pid="${p.id}">
+      <td title="${esc(infoOf(p).desc)}"><i class="swatch" style="background:${colorOf(s, p.id)}"></i>${esc(infoOf(p).emoji)} ${esc(p.name)}${benched.has(p.id) ? ' <span class="tag">bench</span>' : ''}</td><td ${moneyNum(stack)}>${money(stack)}</td><td>${money(p.bought)}</td>
       <td class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}"><b>${signed(net)}</b></td>
       <td>${per(p.stats.vpip, p.stats.hands)}</td><td>${per(p.stats.pfr, p.stats.hands)}</td>
       <td>${p.stats.wins}/${p.stats.hands}</td></tr>`).join('')}
@@ -664,10 +670,15 @@ function editorDiff(orig, ed) {
     for (const k in e.profile) if (e.profile[k] !== o.profile[k]) profile[k] = e.profile[k];
     if (Object.keys(fields).length || Object.keys(profile).length || e.rebuy) players.push({ id: e.id, fields, profile, rebuy: e.rebuy });
   }
-  const removed = orig.players.filter((o) => !ed.players.some((e) => e.id === o.id)).map((o) => o.id);
+  const at = (list, id) => list.some((p) => p.id === id);
+  const gone = orig.players.filter((o) => !at(ed.players, o.id));
+  const benched = gone.filter((o) => at(ed.bench, o.id)).map((o) => o.id);
+  const removed = gone.filter((o) => !at(ed.bench, o.id)).map((o) => o.id);
+  const forgotten = orig.bench.filter((o) => !at(ed.bench, o.id) && !at(ed.players, o.id)).map((o) => o.id);
   const order = ed.players.map((p) => p.id);
-  if (!Object.keys(settings).length && !players.length && !added.length && !removed.length && !ed.reset) return null;
-  return { settings, players, added, removed, order, reset: ed.reset };
+  if (!Object.keys(settings).length && !players.length && !added.length && !removed.length
+    && !benched.length && !forgotten.length && !ed.reset) return null;
+  return { settings, players, added, removed, benched, forgotten, order, reset: ed.reset };
 }
 
 function applyEdit(d, c) {
@@ -682,23 +693,36 @@ function applyEdit(d, c) {
     p.stack += ch.rebuy;
     p.bought += ch.rebuy;
   }
+  d.bench ||= [];
   for (const e of c.added) {
     if (byId.has(e.id)) continue;
-    const p = newPlayer('Player', 'fish', 0);
-    Object.assign(p, { id: e.id, profile: e.profile, stack: e.stack + e.rebuy, bought: e.bought + e.rebuy });
+    // Back from the bench keeps their chips and stats; otherwise a brand-new player.
+    const fromBench = d.bench.find((q) => q.id === e.id);
+    const p = fromBench || Object.assign(newPlayer('Player', 'fish', 0), { id: e.id, stack: e.stack, bought: e.bought });
+    if (fromBench) d.bench = d.bench.filter((q) => q !== fromBench);
+    else if (e.isNew !== true && !fromBench) continue; // deleted from the bench by someone else
+    p.profile = e.profile;
+    p.stack += e.rebuy;
+    p.bought += e.rebuy;
     for (const k of PLAYER_FIELDS) p[k] = clean(k, e[k] ?? '');
     d.players.push(p);
     byId.set(p.id, p);
   }
   // Players still sitting in an unfinished hand can't vanish mid-hand.
   const live = new Set(d.hand && d.hand.phase !== 'done' ? d.hand.seats.map((st) => st.pid) : []);
-  d.players = d.players.filter((p) => !c.removed.includes(p.id) || live.has(p.id));
+  for (const id of c.benched) {
+    const p = byId.get(id);
+    if (p && !live.has(id) && !d.bench.some((q) => q.id === id)) d.bench.unshift(p);
+  }
+  d.players = d.players.filter((p) => !(c.removed.includes(p.id) || c.benched.includes(p.id)) || live.has(p.id));
+  d.bench = d.bench.filter((p) => !c.forgotten.includes(p.id) && !d.players.some((q) => q.id === p.id));
   // Keep this person's ordering for the players they saw; anyone added elsewhere stays at the end.
   const rank = new Map(c.order.map((id, i) => [id, i]));
   d.players.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
   if (d.hand) for (const st of d.hand.seats) { const p = byId.get(st.pid); if (p) st.name = p.name; }
+  assignHues(d);
   if (c.reset) {
-    for (const p of d.players) {
+    for (const p of [...d.players, ...d.bench]) {
       p.stack = d.settings.buyIn; p.bought = d.settings.buyIn;
       p.stats = { hands: 0, vpip: 0, pfr: 0, wins: 0, biggest: 0 };
     }
@@ -715,10 +739,11 @@ function openEditor() {
   const ed = {
     settings: { ...state.settings },
     players: state.players.map((p) => ({ ...p, profile: fullProfile(p), rebuy: 0 })),
+    bench: (state.bench || []).map((p) => ({ ...p, profile: fullProfile(p), rebuy: 0 })),
     reset: false,
   };
   // What the table looked like when the dialog opened, so Save only sends what you changed.
-  const orig = structuredClone({ settings: ed.settings, players: ed.players });
+  const orig = structuredClone({ settings: ed.settings, players: ed.players, bench: ed.bench });
   const dlg = $('#editor');
 
   const traitRow = (p, t) => `<label class="trait">
@@ -796,7 +821,7 @@ function openEditor() {
       <span class="ed-money">${money(p.stack + p.rebuy)} <span class="muted">· in for ${money(p.bought + p.rebuy)}</span></span>
       <button type="button" class="btn small" data-x="rebuy" title="Add one buy-in to this player's stack">+ Buy-in</button>
       <label class="check"><input type="checkbox" data-f="out" ${p.out ? 'checked' : ''}> Sit out</label>
-      <button type="button" class="btn small ghost danger" data-x="remove" ${inHand.has(p.id) ? 'disabled title="In the current hand"' : ''} aria-label="Remove">✕</button>
+      <button type="button" class="btn small ghost" data-x="remove" ${inHand.has(p.id) ? 'disabled title="In the current hand"' : `title="${p.isNew ? 'Remove' : 'Move to the bench — keeps their personality, chips and stats'}"`}>${p.isNew ? '✕' : 'Bench'}</button>
     </div>
     <div class="tune" ${p.open ? '' : 'hidden'}>
       <div class="identity">
@@ -831,6 +856,14 @@ function openEditor() {
       <h3>Players <span class="muted">${ed.players.length}/9</span></h3>
       <div class="ed-players">${ed.players.map(playerRow).join('')}</div>
       <button type="button" class="btn" data-x="add" ${ed.players.length >= 9 ? 'disabled' : ''}>+ Add player</button>
+      ${ed.bench.length ? `<h3>Bench <span class="muted">· saved players, not at the table</span></h3>
+      <div class="bench">${ed.bench.map((p) => `<div class="bench-row" data-id="${p.id}">
+        ${avatarHtml(p)}
+        <div class="who"><div class="name">${esc(p.name)}</div><div class="type">${esc(infoOf(p).emoji)} ${esc(infoOf(p).name)} · ${money(p.stack)} <span class="muted">(${signed(p.stack - p.bought)})</span></div></div>
+        <span class="spacer"></span>
+        <button type="button" class="btn small" data-x="unbench" ${ed.players.length >= 9 ? 'disabled title="Table is full"' : ''}>Bring back</button>
+        <button type="button" class="btn small ghost danger" data-x="forget" title="Delete for good">✕</button>
+      </div>`).join('')}</div>` : ''}
       <div class="dlg-foot">
         <button type="button" class="btn ghost danger" data-x="reset">${ed.reset ? '✓ Bankrolls will reset' : 'Reset bankrolls & stats'}</button>
         <span class="spacer"></span>
@@ -903,7 +936,16 @@ function openEditor() {
     if (x === 'avatar') p.avatar = e.target.closest('[data-v]').dataset.v;
     if (x === 'emoji') p.emoji = p.emoji === e.target.dataset.v ? '' : e.target.dataset.v;
     if (x === 'rebuy') p.rebuy += ed.settings.buyIn;
-    if (x === 'remove') ed.players.splice(+row.dataset.i, 1);
+    if (x === 'remove') {
+      const [gone] = ed.players.splice(+row.dataset.i, 1);
+      if (!gone.isNew) ed.bench.unshift({ ...gone, open: false, rebuy: 0 });
+    }
+    const benchId = e.target.closest('.bench-row')?.dataset.id;
+    if (x === 'unbench' && ed.players.length < 9) {
+      const k = ed.bench.findIndex((q) => q.id === benchId);
+      ed.players.push(...ed.bench.splice(k, 1));
+    }
+    if (x === 'forget' && confirm('Delete this player for good?')) ed.bench = ed.bench.filter((q) => q.id !== benchId);
     if (x === 'add' && ed.players.length < 9) {
       const used = new Set(ed.players.map((q) => q.name));
       const name = ['Gus', 'Hana', 'Ivo', 'Jade', 'Kai', 'Lena', 'Milo', 'Nora', 'Omar', 'Pia'].find((nm) => !used.has(nm)) || 'Player';

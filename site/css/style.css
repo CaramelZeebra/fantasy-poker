@@ -414,3 +414,8 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 .swatch { margin-right: 6px; vertical-align: 1px; }
 .grid.money tr.hi td { background: rgba(255, 255, 255, .04); }
 .empty.small { padding: 12px; font-size: 13px; }
+
+/* ---------- bench ---------- */
+.bench { display: grid; gap: 6px; }
+.bench-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 10px; }
+.bench-row .who { min-width: 0; }

@@ -31,6 +31,19 @@ export function createTable() {
 // A player's full profile. Players saved before a trait existed get it from their preset.
 export const fullProfile = (p) => ({ ...(PRESETS[p?.preset]?.profile || ADV_DEFAULTS), ...(p?.profile || PRESETS.fish.profile) });
 
+// Each player keeps one chart colour for good, whether seated or benched.
+export function assignHues(state) {
+  const all = [...state.players, ...(state.bench || [])];
+  const used = new Set(all.map((p) => p.hue).filter((h) => h != null));
+  for (const p of all) {
+    if (p.hue != null) continue;
+    let h = 0;
+    while (used.has(h) && h < 9) h++;
+    p.hue = h < 9 ? h : all.indexOf(p) % 9;
+    used.add(p.hue);
+  }
+}
+
 export const profilesFor = (state) =>
   state.hand ? state.hand.seats.map((s) => fullProfile(state.players.find((p) => p.id === s.pid))) : [];
 
@@ -78,7 +91,8 @@ export function commitHand(state) {
   }
   if (done) {
     // Everyone's running result after each hand, for the session graph.
-    state.track = [...(state.track || []), { no: h.no, nets: Object.fromEntries(state.players.map((p) => [p.id, p.stack - p.bought])) }].slice(-400);
+    const everyone = [...state.players, ...(state.bench || [])];
+    state.track = [...(state.track || []), { no: h.no, nets: Object.fromEntries(everyone.map((p) => [p.id, p.stack - p.bought])) }].slice(-400);
   }
   if (done && h.result) {
     state.history.unshift({ no: h.no, text: h.result.summary });
@@ -90,6 +104,7 @@ export function commitHand(state) {
 // Returns an error string, or null after dealing a new hand into state.hand.
 export function startHand(state) {
   commitHand(state);
+  assignHues(state);
   const { sb, bb, buyIn, autoRebuy } = state.settings;
   const rebuys = [];
   for (const p of state.players) {
