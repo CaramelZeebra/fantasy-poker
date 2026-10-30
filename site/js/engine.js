@@ -223,10 +223,11 @@ export function botAction(h, profiles, explain = false) {
     opps: opps.map((j) => profiles[j]), oppPids: opps.map((j) => h.seats[j].pid),
     aggrProfile: h.aggressor >= 0 && h.aggressor !== i ? profiles[h.aggressor] : null,
     aggrPid: h.aggressor >= 0 ? h.seats[h.aggressor].pid : null,
-    initiative: h.initiative === i, checked: s.checkedOn === h.street,
+    initiative: h.initiative === i, checked: s.checkedOn === h.street, pfRaises: h.pfRaises || 0,
     tilted: !!s.tilted, net: s.net || 0, stackRatio: (s.stack + s.bet) / Math.max(1, avgOppStack),
     explain,
     posName: explain ? seatName(h, i, dist, n) : '',
+    inPos: !h.seats.some((o, j) => j !== i && !o.folded && !o.allIn && ((j - h.btn + n) % n || n) > (dist || n)),
     aggrName: h.aggressor >= 0 && h.aggressor !== i ? h.seats[h.aggressor].name : null,
     rivalName: explain ? h.seats.find((o) => o.pid === profiles[i]?.rival)?.name : null,
   }, profiles[i]);
@@ -309,6 +310,7 @@ export function dealNext(h) {
   for (const s of h.seats) { s.bet = 0; s.acted = false; if (!s.folded && !s.allIn) s.last = ''; }
   h.curBet = 0;
   h.minRaise = h.bb;
+  if (h.street === 1) h.pfRaises = h.raises; // raises before the flop (the blinds don't count)
   h.raises = 0;
   h.initiative = h.aggressor;
   h.aggressor = -1;

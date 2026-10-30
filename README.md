@@ -49,6 +49,8 @@ npm run serve
 Open http://localhost:8080. With `API_BASE` empty in `site/js/config.js` it runs in **local mode**:
 the table is shared between tabs of the same browser (good for trying it out). Add `?local` to the
 URL to force local mode. `npm run sim` plays 300 hands headless and checks that no chips go missing.
+`node tests/styles.mjs 20000` prints tracker stats (VPIP/PFR, aggression, showdowns, c-bets, barrels,
+check-raises, win rate) for each preset; add `--table table.json` to measure a saved lineup.
 
 ## Deploy
 
