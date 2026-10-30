@@ -14,6 +14,12 @@ card while the odds update.
   Pot-odds grinder, Hero caller) or custom sliders for **hands played, aggression, bluff frequency,
   chasing draws, odds needed to call** (as a multiple of pot odds) and **hero-call tendency**.
   Give anyone their own emoji, label and tagline ("🍺 Drunk uncle — shoves after midnight").
+- **Advanced tweaks** per player: hand rules (any suited, any ace, any pair, connectors, high cards,
+  a lucky hand they always raise), limping, re-raising, position, short-stack shoving, c-bets and
+  barrels, slowplays, check-raises, bet sizing, "can't fold top pair", fear of scary boards, tilt
+  after a big loss, scared money, heaters, bullying short stacks, a rival they won't back down from,
+  and **reading friends' habits**: a good reader bluffs the folders, value-bets the stations and
+  respects a nit's bet. Reads only use what players know about each other's style, never cards.
 - Blinds, buy-ins, auto-rebuys; tracks stack, total bought in, net, VPIP/PFR, hands won.
 - Two odds per player, updated after every action:
   - **Equity** — chance to win if everyone still in sees all five cards (exact on flop/turn).

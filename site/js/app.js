@@ -2,9 +2,9 @@ import { POLL_MS } from './config.js';
 import { makeStore, ConflictError } from './store.js';
 import {
   createTable, startHand, step, profilesFor, potTotal, legal, applyAction,
-  pushUndo, swapCard, newPlayer, streetName,
+  pushUndo, swapCard, newPlayer, streetName, fullProfile,
 } from './engine.js';
-import { PRESETS, TRAITS, presetInfo, preflopTop } from './bots.js';
+import { PRESETS, TRAITS, ADVANCED, ADV_DEFAULTS, advChanged, presetInfo, preflopTop } from './bots.js';
 import { RANKS, SUIT_SYMBOLS, SUIT_NAMES, cardLabel, describeScore, evaluate } from './cards.js';
 import { morph } from './morph.js';
 import { computeOdds as computeOddsHere } from './odds.js';
@@ -294,6 +294,7 @@ function seatHtml(s, h, st, k, n, view) {
   const tags = [];
   if (h && h.sbI === k && h.street === 0) tags.push('SB');
   if (h && h.bbI === k && h.street === 0) tags.push('BB');
+  if (h && st.tilted && fullProfile(p).tilt > 0) tags.push('😤 Tilted');
   const last = st.allIn && !st.folded && h?.phase !== 'done' ? 'All-in' : st.last || '';
   const made = madeHand(h, st);
   return `<div class="${cls.join(' ')}" data-key="seat-${st.pid}" style="--x:${x}%;--y:${y}%">
@@ -510,8 +511,9 @@ function openPicker(from) {
     }).join('')}</div>`).join('')}</div>
     <div class="dlg-foot"><button class="btn ghost" value="">Cancel</button></div>
   </form>`;
-  dlg.onclose = () => {
-    const to = dlg.returnValue;
+  // Submit fires reliably (some browsers delay the dialog's close event).
+  dlg.onsubmit = (ev) => {
+    const to = ev.submitter?.value;
     if (to === '' || to == null || +to === from) return;
     mutate((d) => {
       if (!d.hand || d.hand.phase === 'done') return false;
@@ -530,7 +532,7 @@ function openEditor() {
   const inHand = new Set(state.hand && state.hand.phase !== 'done' ? state.hand.seats.map((s) => s.pid) : []);
   const ed = {
     settings: { ...state.settings },
-    players: state.players.map((p) => ({ ...p, profile: { ...p.profile }, rebuy: 0 })),
+    players: state.players.map((p) => ({ ...p, profile: fullProfile(p), rebuy: 0 })),
     reset: false,
   };
   const dlg = $('#editor');
@@ -539,6 +541,47 @@ function openEditor() {
     <span class="t-label">${t.label} <b>${t.key === 'callReq' ? `${p.profile[t.key].toFixed(2)}× pot odds` : Math.round(p.profile[t.key] * 100)}</b></span>
     <input type="range" data-trait="${t.key}" min="${t.min}" max="${t.max}" step="${t.step}" value="${p.profile[t.key]}">
     <span class="t-ends"><span>${t.lo}</span><span>${t.hi}</span></span></label>`;
+
+  const advVal = (p, key) => p.profile[key] ?? ADV_DEFAULTS[key];
+  const advItem = (p, t) => {
+    const v = advVal(p, t.key);
+    const changed = v !== ADV_DEFAULTS[t.key] ? ' changed' : '';
+    const hint = t.hint ? ` <span class="muted">· ${esc(t.hint)}</span>` : '';
+    if (t.kind === 'toggle') {
+      return `<label class="adv-toggle${changed}"><input type="checkbox" data-adv="${t.key}" ${v ? 'checked' : ''}> <span>${esc(t.label)}${hint}</span></label>`;
+    }
+    if (t.kind === 'select' || t.kind === 'player') {
+      const opts = t.kind === 'select' ? t.options
+        : [['', 'Nobody'], ...ed.players.filter((q) => q.id !== p.id).map((q) => [q.id, q.name])];
+      return `<label class="adv-select${changed}"><span>${esc(t.label)}${hint}</span>
+        <select data-adv="${t.key}">${opts.map(([val, l]) => `<option value="${esc(val)}" ${v === val ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+    }
+    return `<label class="trait${changed}">
+      <span class="t-label">${esc(t.label)}${hint} <b>${Math.round(v * 100)}</b></span>
+      <input type="range" data-adv="${t.key}" min="0" max="1" step="0.01" value="${v}">
+      <span class="t-ends"><span>${esc(t.lo)}</span><span>${esc(t.hi)}</span></span></label>`;
+  };
+  const advancedHtml = (p) => {
+    const n = advChanged(p.profile);
+    return `<div class="adv">
+      <button type="button" class="adv-head" data-x="adv" aria-expanded="${!!p.advOpen}">
+        ${p.advOpen ? '▾' : '▸'} Advanced tweaks <span class="muted">${n ? `${n} set` : 'all default'}</span></button>
+      ${p.advOpen ? `<div class="adv-body">
+        ${ADVANCED.map((g) => `<div class="adv-group"><h4>${esc(g.group)}</h4>${g.items.map((t) => advItem(p, t)).join('')}</div>`).join('')}
+        <div class="adv-foot"><button type="button" class="btn small ghost" data-x="advReset" ${n ? '' : 'disabled'}>Reset advanced to defaults</button></div>
+      </div>` : ''}
+    </div>`;
+  };
+  // Tweaking a preset turns it custom, but it keeps its name and emoji unless renamed.
+  const toCustom = (p) => {
+    if (p.preset in PRESETS) {
+      const base = PRESETS[p.preset];
+      p.emoji ||= base.emoji;
+      p.label ||= base.name;
+      p.tagline ||= base.desc;
+    }
+    p.preset = 'custom';
+  };
 
   const playerRow = (p, i) => `<div class="ed-player" data-i="${i}">
     <div class="ed-main">
@@ -562,6 +605,7 @@ function openEditor() {
         <div class="emoji-picks">${EMOJI_PICKS.map((em) => `<button type="button" class="pick${p.emoji === em ? ' on' : ''}" data-x="emoji" data-v="${em}">${em}</button>`).join('')}</div>
       </div>
       ${TRAITS.map((t) => traitRow(p, t)).join('')}
+      ${advancedHtml(p)}
     </div>
   </div>`;
 
@@ -611,9 +655,21 @@ function openEditor() {
       p.open = true;
       draw();
     }
+    if (el.dataset.adv) {
+      const t = ADVANCED.flatMap((g) => g.items).find((x) => x.key === el.dataset.adv);
+      p.profile[t.key] = t.kind === 'toggle' ? el.checked : t.kind === 'range' ? +el.value : el.value;
+      const wasPreset = p.preset in PRESETS;
+      toCustom(p);
+      if (t.kind === 'range' && !wasPreset) {
+        el.closest('.trait').querySelector('b').textContent = Math.round(+el.value * 100);
+        el.closest('.trait').classList.toggle('changed', +el.value !== ADV_DEFAULTS[t.key]);
+        row.querySelector('.adv-head .muted').textContent = advChanged(p.profile) ? `${advChanged(p.profile)} set` : 'all default';
+      } else draw();
+      return;
+    }
     if (el.dataset.trait) {
       p.profile[el.dataset.trait] = +el.value;
-      p.preset = 'custom';
+      if (p.preset in PRESETS) { toCustom(p); draw(); }
       const b = el.closest('.trait').querySelector('b');
       b.textContent = el.dataset.trait === 'callReq' ? `${(+el.value).toFixed(2)}× pot odds` : Math.round(+el.value * 100);
       row.querySelector('select').value = 'custom';
@@ -625,6 +681,8 @@ function openEditor() {
     const row = e.target.closest('.ed-player');
     const p = row && ed.players[+row.dataset.i];
     if (x === 'tune') p.open = !p.open;
+    if (x === 'adv') p.advOpen = !p.advOpen;
+    if (x === 'advReset') Object.assign(p.profile, ADV_DEFAULTS);
     if (x === 'emoji') p.emoji = p.emoji === e.target.dataset.v ? '' : e.target.dataset.v;
     if (x === 'rebuy') p.rebuy += ed.settings.buyIn;
     if (x === 'remove') ed.players.splice(+row.dataset.i, 1);
@@ -636,8 +694,8 @@ function openEditor() {
     if (x === 'reset') ed.reset = !ed.reset;
     draw();
   };
-  dlg.onclose = () => {
-    if (dlg.returnValue !== 'save') return;
+  dlg.onsubmit = (ev) => {
+    if (ev.submitter?.value !== 'save') return;
     const S = ed.settings;
     if (S.bb < S.sb) S.bb = S.sb;
     if (ed.players.filter((p) => !p.out).length < 2) toast('Heads up: fewer than two players are seated.');

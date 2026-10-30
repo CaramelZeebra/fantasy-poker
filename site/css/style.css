@@ -327,3 +327,18 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- advanced tweaks ---------- */
+.adv { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 8px; }
+.adv-head { background: none; border: 0; padding: 4px 0; cursor: pointer; font-weight: 700; color: var(--text); }
+.adv-head .muted { font-weight: 400; margin-left: 6px; font-size: 13px; }
+.adv-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px 22px; margin-top: 6px; }
+.adv-group { display: grid; gap: 8px; align-content: start; }
+.adv-group h4 { margin: 0; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--gold); font-weight: 500; }
+.adv-toggle { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; cursor: pointer; }
+.adv-toggle input { accent-color: var(--gold); margin-top: 3px; }
+.adv-select { display: grid; gap: 3px; font-size: 13px; }
+.adv-select select { background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; color: var(--text); }
+.adv .trait .t-label .muted { font-size: 11.5px; }
+.adv .changed > span:first-of-type, .adv .changed .t-label { color: var(--gold); }
+.adv-foot { grid-column: 1 / -1; }

@@ -1,7 +1,7 @@
 // No-limit hold'em table state. Everything here is plain JSON so it can live in the shared blob.
 // Hand phases: 'bet' (someone must act), 'deal' (street finished, next card waits), 'done'.
 import { cardLabel, describeScore, evaluate, shuffle } from './cards.js';
-import { PRESETS, decide } from './bots.js';
+import { PRESETS, ADV_DEFAULTS, decide } from './bots.js';
 
 const STREET_NAMES = ['Preflop', 'Flop', 'Turn', 'River'];
 export const streetName = (i) => STREET_NAMES[i] ?? 'Showdown';
@@ -27,8 +27,11 @@ export function createTable() {
   };
 }
 
+// A player's full profile. Players saved before a trait existed get it from their preset.
+export const fullProfile = (p) => ({ ...(PRESETS[p?.preset]?.profile || ADV_DEFAULTS), ...(p?.profile || PRESETS.fish.profile) });
+
 export const profilesFor = (state) =>
-  state.hand ? state.hand.seats.map((s) => (state.players.find((p) => p.id === s.pid) || {}).profile || PRESETS.fish.profile) : [];
+  state.hand ? state.hand.seats.map((s) => fullProfile(state.players.find((p) => p.id === s.pid))) : [];
 
 const log = (h, text, kind = 'act') => { if (h.log) h.log.push({ kind, text }); };
 const potTotal = (h) => h.seats.reduce((a, s) => a + s.total, 0);
@@ -58,6 +61,9 @@ export function commitHand(state) {
     if (s.pfr) p.stats.pfr++;
     if (s.won > s.total) p.stats.wins++;
     p.stats.biggest = Math.max(p.stats.biggest, s.won - s.total);
+    // A big loss sets a player on tilt for a few hands (only matters if they tilt).
+    if (s.total - s.won >= 25 * h.bb) p.tiltLeft = 5;
+    else if (p.tiltLeft > 0) p.tiltLeft--;
   }
   if (done && h.result) {
     state.history.unshift({ no: h.no, text: h.result.summary });
@@ -97,6 +103,7 @@ export function startHand(state) {
     pid: p.id, name: p.name, hole: [deck.pop(), deck.pop()],
     stack: p.stack, start: p.stack, bet: 0, total: 0,
     folded: false, allIn: false, acted: false, last: '', vpip: false, pfr: false, won: 0,
+    tilted: (p.tiltLeft || 0) > 0, net: (p.stack - p.bought) / buyIn, checkedOn: -1,
   }));
   const n = seats.length;
   const btn = seats.findIndex((s) => s.pid === btnPlayer.id);
@@ -104,7 +111,7 @@ export function startHand(state) {
   const bbI = (sbI + 1) % n;
   const h = {
     no: state.handNo, seats, btn, sbI, bbI, bb, board5: deck.splice(0, 5), shown: 0,
-    street: 0, phase: 'bet', toAct: -1, aggressor: -1, curBet: 0, minRaise: bb, raises: 0,
+    street: 0, phase: 'bet', toAct: -1, aggressor: -1, initiative: -1, curBet: 0, minRaise: bb, raises: 0,
     log: [], result: null, odds: null, committed: false,
   };
   for (const name of rebuys) log(h, `${name} rebuys for ${buyIn}`, 'info');
@@ -164,12 +171,18 @@ export function botAction(h, profiles) {
   const n = h.seats.length;
   const dist = (i - h.btn + n) % n;
   const pos = dist === 0 ? 1 : dist <= 2 ? 0.3 : (dist - 2) / Math.max(1, n - 2);
+  const opps = h.seats.map((o, j) => j).filter((j) => j !== i && !h.seats[j].folded);
+  const avgOppStack = opps.reduce((a, j) => a + h.seats[j].stack + h.seats[j].bet, 0) / Math.max(1, opps.length);
   return decide({
     street: h.street, hole: s.hole, board: h.board5.slice(0, h.shown),
     pot: potTotal(h), toCall: L.toCall, curBet: h.curBet, myBet: s.bet, stack: s.stack,
-    minRaiseTo: L.minRaiseTo, bb: h.bb, nOpp: h.seats.filter((o) => !o.folded).length - 1,
+    minRaiseTo: L.minRaiseTo, bb: h.bb, nOpp: opps.length,
     raises: h.raises, pos, canRaise: L.canRaise,
-    readBluff: h.aggressor >= 0 && profiles[h.aggressor] ? profiles[h.aggressor].bluff : 0,
+    opps: opps.map((j) => profiles[j]), oppPids: opps.map((j) => h.seats[j].pid),
+    aggrProfile: h.aggressor >= 0 && h.aggressor !== i ? profiles[h.aggressor] : null,
+    aggrPid: h.aggressor >= 0 ? h.seats[h.aggressor].pid : null,
+    initiative: h.initiative === i, checked: s.checkedOn === h.street,
+    tilted: !!s.tilted, net: s.net || 0, stackRatio: (s.stack + s.bet) / Math.max(1, avgOppStack),
   }, profiles[i]);
 }
 
@@ -193,6 +206,7 @@ export function applyAction(h, act) {
     log(h, `${s.name} folds`);
   } else if (a === 'check') {
     s.last = 'Check';
+    s.checkedOn = h.street;
     log(h, `${s.name} checks`);
   } else if (a === 'call') {
     const amt = put(h, s, L.toCall);
@@ -228,6 +242,7 @@ export function dealNext(h) {
   h.curBet = 0;
   h.minRaise = h.bb;
   h.raises = 0;
+  h.initiative = h.aggressor;
   h.aggressor = -1;
   const cards = h.street === 1 ? h.board5.slice(0, 3) : [h.board5[h.shown - 1]];
   if (h.log) log(h, `${streetName(h.street)}: ${cards.map(cardLabel).join(' ')}  (pot ${potTotal(h)})`, 'street');
