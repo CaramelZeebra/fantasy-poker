@@ -228,6 +228,12 @@ export function botView(h, profiles, explain = false) {
     opps: opps.map((j) => profiles[j]), oppPids: opps.map((j) => h.seats[j].pid),
     aggrProfile: h.aggressor >= 0 && h.aggressor !== i ? profiles[h.aggressor] : null,
     aggrPid: h.aggressor >= 0 ? h.seats[h.aggressor].pid : null,
+    // How the bettor got here: postflop streets they've bet (this one included), and whether
+    // they checked first and then raised.
+    aggrBarrels: h.aggressor >= 0 ? [1, 2, 3].filter((st) => (h.seats[h.aggressor].betOn || 0) & (1 << st)).length : 0,
+    aggrCheckRaised: h.aggressor >= 0 && h.seats[h.aggressor].checkedOn === h.street,
+    // How much is in front of me this street compared with the pot before it.
+    betSize: h.curBet > 0 && h.street > 0 ? (h.curBet - s.bet) / Math.max(1, potTotal(h) - (h.curBet - s.bet)) : 0,
     initiative: h.initiative === i, checked: s.checkedOn === h.street, pfRaises: h.pfRaises || 0,
     tilted: !!s.tilted, net: s.net || 0, stackRatio: (s.stack + s.bet) / Math.max(1, avgOppStack),
     // What can actually be won or lost: my stack, or the biggest stack still in if smaller.
@@ -301,6 +307,7 @@ export function applyAction(h, act) {
     h.curBet = Math.max(h.curBet, s.bet);
     h.raises++;
     h.aggressor = i;
+    s.betOn = (s.betOn || 0) | (1 << h.street); // streets they've bet or raised, for reads
     if (h.street === 0) { s.vpip = true; s.pfr = true; }
     s.last = `${wasBet ? 'Bet' : 'Raise'} ${s.bet}`;
     log(h, `${s.name} ${wasBet ? 'bets' : 'raises to'} ${s.bet}${s.allIn ? ' (all-in)' : ''}`, 'act', extra);
