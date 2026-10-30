@@ -97,6 +97,7 @@ button, input, select { font: inherit; color: inherit; }
 /* ---------- table ---------- */
 .table {
   position: relative; height: clamp(620px, 76vh, 780px);
+  margin-bottom: 28px; /* the bottom seat hangs a little below the rail */
 }
 .seats { position: absolute; inset: 92px 86px; }
 .rail {
@@ -166,7 +167,7 @@ button.card:disabled { opacity: 1; }
   background: rgba(20, 27, 24, .94); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, .45);
   transition: border-color .25s, box-shadow .25s, opacity .3s, left .45s ease, top .45s ease;
-  animation: pop .3s ease-out;
+  animation: seat-in .3s ease-out; /* animates `scale`, not `transform`, which positions the seat */
 }
 .seat.acting { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(227, 184, 102, .35), 0 10px 24px rgba(0, 0, 0, .5); }
 .seat.folded { opacity: .55; }
@@ -296,6 +297,7 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 @keyframes chip { from { transform: scale(.6); opacity: 0; } }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes pop { from { transform: scale(.94); opacity: 0; } }
+@keyframes seat-in { from { scale: .94; opacity: 0; } }
 
 /* ---------- responsive ---------- */
 @media (max-width: 1200px) {
@@ -311,7 +313,7 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
   .topbar { padding: 10px 16px; gap: 10px; }
   .brand { font-size: 20px; }
   .layout { padding: 12px 16px; }
-  .table { height: auto; display: flex; flex-direction: column; gap: 12px; }
+  .table { height: auto; display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
   .rail { position: absolute; inset: 0 0 auto 0; height: 190px; border-radius: 28px; padding: 10px; }
   .felt { border-radius: 20px; }
   .center { position: relative; left: auto; top: auto; transform: none; width: 100%; height: 190px; justify-content: center; }
@@ -369,14 +371,26 @@ dialog h3 { margin: 18px 0 8px; font-size: 16px; }
 /* ---------- reasons & chatter ---------- */
 .narration {
   min-height: 42px; padding: 8px 12px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line);
-  font-size: 14px; animation: say .3s ease-out; display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline;
+  font-size: 14px; animation: say .3s ease-out;
 }
+.n-head { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
+.more { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 1px 18px; font-size: 12.5px; color: var(--muted); }
+.narration .more { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+/* Fixed height so the buttons below never move as the explanation changes length. */
+.narration { height: 124px; overflow-y: auto; overscroll-behavior: contain; }
+@media (max-width: 760px) { .narration { height: 64px; } .narration .more { display: none; } }
+.more li { padding: 0 0 0 12px; border: 0; position: relative; }
+.more li::before { content: '·'; position: absolute; left: 2px; }
+.log .more { padding-left: 14px; font-size: 12px; }
+.log-opt select { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; margin-left: 6px; }
+.log-opt { font-size: 13px; color: var(--muted); display: block; }
 .narration.empty { visibility: hidden; }
 .why-inline { color: var(--muted); font-size: 13px; }
 .log .why { color: var(--muted); font-size: 12.5px; padding-left: 14px; position: relative; margin-top: 1px; }
 .log .why::before { content: '↳'; position: absolute; left: 0; }
 .log li.chat { color: var(--gold); font-style: italic; }
 .log-opt { margin-bottom: 8px; }
+.log li .more li { border: 0; padding-top: 0; padding-bottom: 0; }
 .say {
   position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%);
   width: max-content; max-width: 210px; padding: 6px 10px; border-radius: 12px;

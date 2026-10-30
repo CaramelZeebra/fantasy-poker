@@ -327,7 +327,11 @@ export function decide(v, p0, rnd = Math.random) {
   const X = !!v.explain;
   const P = (x) => `${Math.round(clamp(x, 0, 1) * 100)}%`;
   const mood = X ? moodNotes(p0, p, v) : [];
-  const out = (act, why, tag) => (X ? { ...act, why: [why, ...mood].filter(Boolean).join(' · '), tag } : act);
+  const $ = (n) => `$${Math.round(n).toLocaleString()}`;
+  // `ctx` collects the longer explanation (the situation, the maths, the reads) as each
+  // branch works it out; the headline `why` says what tipped it.
+  let ctx = [];
+  const out = (act, why, tag) => (X ? { ...act, why, more: [...ctx, ...mood.map((m) => `Mood: ${m}.`)].filter(Boolean), tag } : act);
   const fold = (why) => (free ? out({ a: 'check' }, why && `${why} — but checking is free`) : out({ a: 'fold' }, why));
   const call = (why) => out(free ? { a: 'check' } : { a: 'call' }, why);
   const raise = (to, why, tag) => {
@@ -346,6 +350,14 @@ export function decide(v, p0, rnd = Math.random) {
   const readBluff = bettor ? bettor.bluff : 0;
   const sizeMult = 0.5 + p.sizing;
   const who = v.aggrName || 'them';
+  // What they make of the bettor's habits, in words.
+  const personRead = () => {
+    if (!X || !v.aggrName || !bettor) return '';
+    if (p.reads < 0.3) return `Doesn't really pay attention to how ${who} plays.`;
+    const loose = bettor.loose > 0.6 ? 'plays lots of hands' : bettor.loose < 0.25 ? 'only plays good hands' : 'plays a normal range';
+    const bl = bettor.bluff > 0.5 ? 'bluffs a lot' : bettor.bluff < 0.12 ? 'almost never bluffs' : 'bluffs sometimes';
+    return `Knows ${who} ${loose} and ${bl}${p.reads > 0.8 ? ' (reads people well)' : ''}.`;
+  };
   const tableRead = () => (!X || p.reads < 0.3 ? ''
     : bluffMult > 1.25 ? 'reckons this lot folds too much'
     : bluffMult < 0.75 ? "knows they won't fold" : '');
@@ -366,6 +378,16 @@ export function decide(v, p0, rnd = Math.random) {
     const plays = X ? `plays the top ${Math.round(range * 100)}%${p.posAware >= 0.6 ? (v.pos >= 0.9 ? ' on the button' : v.pos < 0.35 ? ' from early seats' : '') : ''}` : '';
     const lovesTxt = loves === true ? `${handTxt} — always plays these` : '';
     const bbLeft = v.stack / Math.max(1, v.bb);
+    if (X) {
+      ctx = [
+        `Hand: ${code}, better than ${100 - Math.max(1, Math.round(top * 100))}% of starting hands.`,
+        `${p._style || 'This player'} plays about ${P(range)} of hands from ${v.posName || 'here'}${p.posAware >= 0.65 ? ' (pays attention to position)' : p.posAware <= 0.25 ? ' (ignores position)' : ''}.`,
+        v.toCall > 0 ? `Costs ${$(v.toCall)} to call into a ${$(v.pot)} pot — ${P(v.toCall / (v.pot + v.toCall))} pot odds.` : 'Nothing more to put in: checking is free.',
+        `${$(v.stack)} behind (${Math.round(bbLeft)} big blinds).`,
+        loves === true ? 'This hand is on their personal always-play list.' : '',
+        loves === 'fav' ? `${code} is their lucky hand.` : '',
+      ];
+    }
 
     if (p.shove > 0 && bbLeft < 12 && v.canRaise && v.raises < 3) {
       const shoveRange = clamp(range * (1 + 1.5 * p.shove), 0, 1);
@@ -385,7 +407,9 @@ export function decide(v, p0, rnd = Math.random) {
       }
       if (top <= range || loves) {
         const why = lovesTxt || `${handTxt}; ${plays}`;
-        return p.aggr > 0.6 && rnd() < p.aggr - 0.4 && rnd() >= p.limp ? open(`${why}, and aggressive with it`) : call(why);
+        if (X) ctx.push(`Only raises first in with about the top ${P(raiseRange)}${p.limp > 0.3 ? ', and likes to limp' : ''}.`);
+        return p.aggr > 0.6 && rnd() < p.aggr - 0.4 && rnd() >= p.limp ? open(`${why}, and aggressive with it`)
+          : call(lovesTxt || `${handTxt}: good enough to play, not to raise`);
       }
       if (rnd() < p.bluff * 0.12 * (0.5 + v.pos) * bluffMult) return open(`Junk (${code}), but raising anyway${v.pos >= 0.9 ? ' to steal the blinds' : ''}${tableRead() ? ` — ${tableRead()}` : ''}`, 'bluff');
       return fold(`${handTxt}; ${plays}`);
@@ -402,6 +426,14 @@ export function decide(v, p0, rnd = Math.random) {
     const facing = X ? `vs ${v.raises > 1 ? `${v.raises - 1 > 1 ? 'a 4-bet' : 'a re-raise'}` : 'a raise'}${v.aggrName ? ` from ${v.aggrName}` : ''}` : '';
     const contTxt = X ? `continues with the top ${Math.round(cont * 100)}% ${facing}` : '';
     const reraise = cont * (0.15 + 0.45 * p.aggr) * 2 * p.threeBet;
+    if (X) {
+      ctx.push(
+        `Facing ${v.raises === 1 ? 'a raise' : v.raises === 2 ? 'a re-raise' : `${v.raises} raises`}${v.aggrName ? ` from ${v.aggrName}` : ''}: will continue with about the top ${P(cont)} here${commit > 0.25 ? `, tighter because it's ${P(commit)} of their stack` : ''}.`,
+        personRead(),
+        cheap ? 'The price is small enough that most hands are worth a look.' : '',
+        `Re-raises with roughly the top ${P(reraise)}.`,
+      );
+    }
     if (top <= reraise && v.raises < 4) return raise(v.curBet * (2.6 + rnd() * 0.6), `${handTxt} — too good to just call ${facing}`);
     if (top <= cont) return call([`${handTxt}; ${contTxt}`, cheap && top > range * 0.6 ? 'cheap enough to see a flop' : '', bettorRead()].filter(Boolean).join(', '));
     if (loves && commit < 0.15) return call(`${lovesTxt}, and the price is small`);
@@ -421,6 +453,15 @@ export function decide(v, p0, rnd = Math.random) {
   const vsN = v.nOpp > 1 ? `vs ${v.nOpp} players` : '';
   const strength = X ? `${has}, feels like ${P(E)} to win${vsN ? ` ${vsN}` : ''}` : '';
   const drawTxt = X && outs >= 4 && v.street < 3 ? `${outs} outs to improve` : '';
+  if (X) {
+    ctx = [
+      `Has ${has}${(evaluate(v.board) >> 20) === mine && mine > 0 ? ' — but that mostly comes from the board, so everyone has it' : ''}${outs >= 4 && v.street < 3 ? `, plus a draw (${outs} outs)` : ''}.`,
+      `Board: ${boardWords(v.board)}.`,
+      `Against ${v.nOpp === 1 ? 'one opponent' : `${v.nOpp} opponents`} with unknown cards, reckons this wins about ${P(E)} of the time.`,
+      `Position: ${v.posName || 'somewhere'}. ${$(v.stack)} behind, ${$(v.pot)} in the pot.`,
+      v.initiative ? 'Was the last one to bet or raise on the previous street, so has the lead.' : '',
+    ];
+  }
 
   if (free) {
     if (H > 0.9 && rnd() < (1 - p.aggr) * 0.8 * p.slowplay) return out({ a: 'check' }, `${strength} — slowplaying to trap`, 'trap');
@@ -465,6 +506,19 @@ export function decide(v, p0, rnd = Math.random) {
   const scareLvl = boardScare(v.board);
   const scare = mine >= 4 ? 0 : p.scare * 0.3 * scareLvl;
   const eff = Math.pow(E, rangePow) * (1 - discount) * (1 - scare) + drawBoost;
+  if (X) {
+    ctx.push(
+      `Facing ${$(v.toCall)} into ${$(potBefore)}: pot odds say a call needs ${P(potOdds)} to break even.`,
+      `${p._style || 'This player'} wants ${p.callReq >= 1.15 ? 'more than' : p.callReq <= 0.85 ? 'less than' : 'about'} the pot odds (×${p.callReq.toFixed(2)}), so needs ${P(need)}.`,
+      discount > 0.02 ? `A bet this size makes them trust their hand ${P(discount)} less.` : '',
+      personRead(),
+      rangePow > 1.15 ? `Respecting ${who}'s bet drops their estimate to about ${P(Math.pow(E, rangePow))}.`
+        : rangePow < 0.85 ? `Against ${who}'s wide betting, their hand is worth more: about ${P(Math.pow(E, rangePow))}.` : '',
+      drawBoost > 0.02 ? `Likes chasing: adds ${P(drawBoost)} for the ${outs}-out draw.` : '',
+      scare > 0.02 ? `Nervous about the board: knocks off ${P(scare)}.` : '',
+      `Overall, rates a call at ${P(eff)} against the ${P(need)} it needs.`,
+    );
+  }
   const math = X ? [
     `needs ${P(need)} to call, rates it ${P(eff)}`,
     bettorRead(),
@@ -480,6 +534,27 @@ export function decide(v, p0, rnd = Math.random) {
   if (mine > boardOnly && rnd() < p.hero * 0.35) return call(`Hero call! ${has} and doesn't believe ${who} (${math})`, 'hero');
   if (v.raises < 3 && rnd() < p.bluff * 0.07 * bluffMult) return raise(v.curBet * 2.8, `Raise bluff with ${has} — trying to push ${who} off`, 'bluff');
   return fold(`${has}: ${math}`);
+}
+
+// The board's texture in words.
+function boardWords(board) {
+  const suits = [0, 0, 0, 0];
+  let mask = 0, paired = false;
+  for (const c of board) { suits[c & 3]++; if (mask & (1 << (c >> 2))) paired = true; mask |= 1 << (c >> 2); }
+  let run = 0;
+  for (let lo = -1; lo <= 8; lo++) {
+    let n = 0;
+    for (let r = lo; r < lo + 5; r++) if (mask & (1 << (r < 0 ? 12 : r))) n++;
+    run = Math.max(run, n);
+  }
+  const bits = [];
+  const ms = Math.max(...suits);
+  if (ms >= 3) bits.push(ms >= 4 ? 'four of one suit' : 'a flush is possible');
+  else if (ms === 2 && board.length < 5) bits.push('a flush draw is out there');
+  if (run >= 4) bits.push('four to a straight');
+  else if (run >= 3) bits.push('straights are possible');
+  if (paired) bits.push('paired');
+  return bits.length ? bits.join(', ') : 'dry — not much to be scared of';
 }
 
 // Why this player isn't quite themselves right now.

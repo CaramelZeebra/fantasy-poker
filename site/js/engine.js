@@ -44,8 +44,12 @@ export function assignHues(state) {
   }
 }
 
+const styleOf = (p) => p?.label || PRESETS[p?.preset]?.name || 'Custom player';
 export const profilesFor = (state) =>
-  state.hand ? state.hand.seats.map((s) => fullProfile(state.players.find((p) => p.id === s.pid))) : [];
+  state.hand ? state.hand.seats.map((s) => {
+    const p = state.players.find((q) => q.id === s.pid);
+    return { ...fullProfile(p), _style: styleOf(p) };
+  }) : [];
 
 const log = (h, text, kind = 'act', extra) => { if (h.log) h.log.push(extra ? { kind, text, ...extra } : { kind, text }); };
 
@@ -222,9 +226,24 @@ export function botAction(h, profiles, explain = false) {
     initiative: h.initiative === i, checked: s.checkedOn === h.street,
     tilted: !!s.tilted, net: s.net || 0, stackRatio: (s.stack + s.bet) / Math.max(1, avgOppStack),
     explain,
+    posName: explain ? seatName(h, i, dist, n) : '',
     aggrName: h.aggressor >= 0 && h.aggressor !== i ? h.seats[h.aggressor].name : null,
     rivalName: explain ? h.seats.find((o) => o.pid === profiles[i]?.rival)?.name : null,
   }, profiles[i]);
+}
+
+// Where a seat sits, in words, for the bots' explanations.
+function seatName(h, i, dist, n) {
+  if (h.street === 0 && i === h.sbI && n > 2) return 'the small blind';
+  if (h.street === 0 && i === h.bbI) return 'the big blind';
+  if (dist === 0) return 'the button';
+  if (h.street > 0) {
+    // Postflop: does anyone still to act sit after them?
+    const after = h.seats.some((o, j) => j !== i && !o.folded && !o.allIn && ((j - h.btn + n) % n) > dist);
+    return after ? 'out of position (others act after them)' : 'in position (acts last)';
+  }
+  const fromBtn = n - dist; // seats until the button
+  return fromBtn <= 1 ? 'the cutoff' : fromBtn <= Math.ceil(n / 3) ? 'a late seat' : dist <= 3 ? 'an early seat' : 'a middle seat';
 }
 
 export function applyAction(h, act) {
@@ -241,8 +260,8 @@ export function applyAction(h, act) {
     else to = Math.min(L.maxTo, Math.max(to, L.minRaiseTo));
   }
   s.acted = true;
-  const extra = h.log ? { seat: i, why: act.why || '' } : null;
-  if (h.log) { s.why = act.why || ''; s.tag = act.tag || ''; }
+  const extra = h.log ? { seat: i, why: act.why || '', more: act.more || [] } : null;
+  if (h.log) { s.why = [act.why, ...(act.more || [])].filter(Boolean).join('\n'); s.tag = act.tag || ''; }
   const bettor = h.aggressor >= 0 && h.aggressor !== i ? h.aggressor : -1;
   const opp = bettor >= 0 ? h.seats[bettor].name : '';
   if (a === 'fold') {

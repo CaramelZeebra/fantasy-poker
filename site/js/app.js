@@ -27,7 +27,7 @@ const ui = {
   odds: { key: undefined },
   prevOdds: null,
   trail: { no: null, rows: {} },
-  whys: lsGet('whys', '1') === '1',
+  whys: ({ 1: 'full', 0: 'off' })[lsGet('whys', 'full')] || lsGet('whys', 'full'), // off | short | full
 };
 const avatars = new Set();
 let store, state = null;
@@ -391,7 +391,10 @@ function narration(h) {
   for (let j = h.log.length - 1; j >= 0; j--) if (h.log[j].kind === 'act' || h.log[j].kind === 'result') { idx = j; break; }
   const l = h.log[idx];
   if (!l) return '<div class="narration empty"></div>';
-  return `<div class="narration" data-key="n${h.no}-${idx}"><b>${esc(l.text)}</b>${l.why ? `<span class="why-inline">${esc(l.why)}</span>` : ''}</div>`;
+  return `<div class="narration" data-key="n${h.no}-${idx}">
+    <div class="n-head"><b>${esc(l.text)}</b>${l.why ? `<span class="why-inline">${esc(l.why)}</span>` : ''}</div>
+    ${l.more?.length ? `<ul class="more">${l.more.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
+  </div>`;
 }
 
 function renderControls(s) {
@@ -482,8 +485,9 @@ function oddsPanel(s) {
 function logPanel(s) {
   const h = s.hand;
   if (!h) return '<p class="empty">No hand yet.</p>';
-  return `<label class="check log-opt"><input type="checkbox" id="show-whys" ${ui.whys ? 'checked' : ''}> Show why each player acted</label>
-  <ol class="log">${h.log.map((l) => `<li class="${l.kind}">${esc(l.text)}${ui.whys && l.why ? `<div class="why">${esc(l.why)}</div>` : ''}</li>`).join('')}</ol>`;
+  const opt = (v, label) => `<option value="${v}" ${ui.whys === v ? 'selected' : ''}>${label}</option>`;
+  return `<label class="log-opt">Why they acted <select id="show-whys">${opt('full', 'Full reasoning')}${opt('short', 'One line')}${opt('off', 'Hide')}</select></label>
+  <ol class="log">${h.log.map((l) => `<li class="${l.kind}">${esc(l.text)}${ui.whys !== 'off' && l.why ? `<div class="why">${esc(l.why)}</div>` : ''}${ui.whys === 'full' && l.more?.length ? `<ul class="more">${l.more.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}</li>`).join('')}</ol>`;
 }
 
 // ---------- session graph ----------
@@ -1007,8 +1011,8 @@ $('#panel').addEventListener('pointerleave', () => {
 });
 $('#panel').addEventListener('input', (e) => {
   if (e.target.id !== 'show-whys') return;
-  ui.whys = e.target.checked;
-  lsSet('whys', ui.whys ? '1' : '0');
+  ui.whys = e.target.value;
+  lsSet('whys', ui.whys);
   render();
 });
 $('#tabs').addEventListener('click', (e) => {
