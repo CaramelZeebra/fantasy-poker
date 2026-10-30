@@ -230,6 +230,8 @@ export function botView(h, profiles, explain = false) {
     aggrPid: h.aggressor >= 0 ? h.seats[h.aggressor].pid : null,
     initiative: h.initiative === i, checked: s.checkedOn === h.street, pfRaises: h.pfRaises || 0,
     tilted: !!s.tilted, net: s.net || 0, stackRatio: (s.stack + s.bet) / Math.max(1, avgOppStack),
+    // What can actually be won or lost: my stack, or the biggest stack still in if smaller.
+    effStack: Math.min(s.stack + s.bet, Math.max(0, ...opps.map((j) => h.seats[j].stack + h.seats[j].bet))),
     explain,
     posName: explain ? seatName(h, i, dist, n) : '',
     inPos: !h.seats.some((o, j) => j !== i && !o.folded && !o.allIn && ((j - h.btn + n) % n || n) > (dist || n)),
