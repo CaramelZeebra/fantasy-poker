@@ -244,9 +244,14 @@ function cardHtml(c, { big = false, edit = false, dim = false } = {}) {
 }
 const backHtml = (key, big) => `<div class="card back${big ? ' big' : ''}" data-key="${key}"></div>`;
 
+// p.avatar: '' = automatic (preset picture, or a custom player's emoji), 'emoji', or a picture key.
+const AVATAR_KEYS = [...Object.keys(PRESETS), 'custom'];
 function avatarHtml(p) {
-  const key = p?.preset in PRESETS ? p.preset : 'custom';
-  if (key === 'custom' && p?.emoji) return `<div class="avatar emoji" aria-hidden="true">${esc(p.emoji)}</div>`;
+  const custom = !(p?.preset in PRESETS);
+  const choice = p?.avatar || '';
+  const emoji = p?.emoji || presetInfo(p?.preset).emoji;
+  if (choice === 'emoji' || (!choice && custom && p?.emoji)) return `<div class="avatar emoji" aria-hidden="true">${esc(emoji)}</div>`;
+  const key = AVATAR_KEYS.includes(choice) ? choice : custom ? 'custom' : p.preset;
   if (avatars.has(key)) return `<img class="avatar" src="assets/avatars/${key}.jpg" alt="">`;
   const initials = (p?.name || '?').trim().slice(0, 2).toUpperCase();
   return `<div class="avatar initials">${esc(initials)}</div>`;
@@ -597,6 +602,7 @@ function openEditor() {
       p.emoji ||= base.emoji;
       p.label ||= base.name;
       p.tagline ||= base.desc;
+      p.avatar ||= p.preset; // keep their picture too
     }
     p.preset = 'custom';
   };
@@ -620,6 +626,13 @@ function openEditor() {
         <label class="id-emoji">Emoji <input data-f="emoji" value="${esc(p.emoji || '')}" placeholder="${presetInfo(p.preset).emoji}" maxlength="8"></label>
         <label class="id-label">Label <input data-f="label" value="${esc(p.label || '')}" placeholder="${esc(presetInfo(p.preset).name)}" maxlength="24"></label>
         <label class="id-tag">Tagline <input data-f="tagline" value="${esc(p.tagline || '')}" placeholder="${esc(presetInfo(p.preset).desc)}" maxlength="90"></label>
+        <div class="avatar-picks" role="group" aria-label="Avatar">
+          <span class="muted">Avatar</span>
+          <button type="button" class="av-pick${!p.avatar ? ' on' : ''}" data-x="avatar" data-v="" title="Automatic">Auto</button>
+          ${AVATAR_KEYS.map((k) => `<button type="button" class="av-pick${p.avatar === k ? ' on' : ''}" data-x="avatar" data-v="${k}"
+            title="${k === 'custom' ? 'Mystery player' : esc(PRESETS[k].name)}"><img src="assets/avatars/${k}.jpg" alt=""></button>`).join('')}
+          <button type="button" class="av-pick emoji${p.avatar === 'emoji' ? ' on' : ''}" data-x="avatar" data-v="emoji" title="Use the emoji">${esc(p.emoji || presetInfo(p.preset).emoji)}</button>
+        </div>
         <div class="emoji-picks">${EMOJI_PICKS.map((em) => `<button type="button" class="pick${p.emoji === em ? ' on' : ''}" data-x="emoji" data-v="${em}">${em}</button>`).join('')}</div>
       </div>
       ${TRAITS.map((t) => traitRow(p, t)).join('')}
@@ -668,7 +681,7 @@ function openEditor() {
       p.preset = el.value;
       if (PRESETS[el.value]) {
         p.profile = { ...PRESETS[el.value].profile };
-        p.emoji = p.label = p.tagline = ''; // a preset brings its own identity
+        p.emoji = p.label = p.tagline = p.avatar = ''; // a preset brings its own identity
       }
       p.open = true;
       draw();
@@ -709,6 +722,7 @@ function openEditor() {
       p.profile.fav = [...picked].join(',');
       toCustom(p);
     }
+    if (x === 'avatar') p.avatar = e.target.closest('[data-v]').dataset.v;
     if (x === 'emoji') p.emoji = p.emoji === e.target.dataset.v ? '' : e.target.dataset.v;
     if (x === 'rebuy') p.rebuy += ed.settings.buyIn;
     if (x === 'remove') ed.players.splice(+row.dataset.i, 1);
@@ -736,7 +750,7 @@ function openEditor() {
         if (!cur) { p.id = e.id; p.stack = 0; p.bought = 0; }
         Object.assign(p, {
           name: e.name.trim() || 'Player', preset: e.preset, profile: e.profile, out: e.out,
-          emoji: (e.emoji || '').trim(), label: (e.label || '').trim(), tagline: (e.tagline || '').trim(),
+          emoji: (e.emoji || '').trim(), avatar: e.avatar || '', label: (e.label || '').trim(), tagline: (e.tagline || '').trim(),
         });
         p.stack += e.rebuy + (cur ? 0 : e.stack);
         p.bought += e.rebuy + (cur ? 0 : e.bought);
