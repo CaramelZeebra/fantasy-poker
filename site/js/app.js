@@ -546,7 +546,7 @@ function openEditor() {
       <input class="name-in" data-f="name" value="${esc(p.name)}" maxlength="16" aria-label="Name">
       <select data-f="preset" aria-label="Personality">
         ${Object.entries(PRESETS).map(([k, v]) => `<option value="${k}" ${p.preset === k ? 'selected' : ''}>${v.emoji} ${v.name}</option>`).join('')}
-        <option value="custom" ${p.preset in PRESETS ? '' : 'selected'}>${esc(p.emoji || '🎛️')} Custom</option>
+        <option value="custom" ${p.preset in PRESETS ? '' : 'selected'}>${esc(p.emoji || '🎛️')} ${esc(p.label || 'Custom')}</option>
       </select>
       <button type="button" class="btn small ghost" data-x="tune">Tune ▾</button>
       <span class="ed-money">${money(p.stack + p.rebuy)} <span class="muted">· in for ${money(p.bought + p.rebuy)}</span></span>
