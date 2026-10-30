@@ -134,8 +134,8 @@ function buildPreflop() {
   const rnd = mulberry32(20261029);
   const eq = new Float64Array(169);
   const combos = new Float64Array(169);
-  const N = 900;
-  const seven = new Array(7), opp = new Array(7);
+  const N = 2500;
+  const seven = new Array(7), opp = new Array(7), opp2 = new Array(7);
   for (let r1 = 0; r1 < 13; r1++) {
     for (let r2 = 0; r2 <= r1; r2++) {
       for (const suited of r1 === r2 ? [false] : [false, true]) {
@@ -143,18 +143,21 @@ function buildPreflop() {
         const cls = handClass(a, b);
         combos[cls] = r1 === r2 ? 6 : suited ? 4 : 12;
         const deck = remainingDeck([a, b]);
-        let score = 0;
+        // Rank on equity heads-up and three-way together: heads-up alone overrates small
+        // pairs and weak aces (88 above AKs), which real players don't 4-bet with.
+        let hu = 0, multi = 0;
         for (let it = 0; it < N; it++) {
-          for (let j = 0; j < 7; j++) {
+          for (let j = 0; j < 9; j++) {
             const k = j + ((rnd() * (deck.length - j)) | 0);
             const t = deck[j]; deck[j] = deck[k]; deck[k] = t;
           }
-          seven[0] = a; seven[1] = b; opp[0] = deck[5]; opp[1] = deck[6];
-          for (let j = 0; j < 5; j++) seven[j + 2] = opp[j + 2] = deck[j];
-          const me = evaluate(seven), them = evaluate(opp);
-          score += me > them ? 1 : me === them ? 0.5 : 0;
+          seven[0] = a; seven[1] = b; opp[0] = deck[5]; opp[1] = deck[6]; opp2[0] = deck[7]; opp2[1] = deck[8];
+          for (let j = 0; j < 5; j++) seven[j + 2] = opp[j + 2] = opp2[j + 2] = deck[j];
+          const me = evaluate(seven), them = evaluate(opp), them2 = evaluate(opp2);
+          hu += me > them ? 1 : me === them ? 0.5 : 0;
+          multi += me > them && me > them2 ? 1 : me >= them && me >= them2 ? 0.5 : 0;
         }
-        eq[cls] = score / N;
+        eq[cls] = hu / N + 1.5 * multi / N;
       }
     }
   }
@@ -392,8 +395,8 @@ export function decide(v, p0, rnd = Math.random) {
     const code = X ? handCode(v.hole) : '';
     const handTxt = X ? `${code} (top ${Math.max(1, Math.round(top * 100))}% of hands)` : '';
     // Position: positional players open up on the button and tighten up in early seats.
-    const posFactor = Math.exp(2.2 * p.posAware * (v.pos - 0.5));
-    let range = clamp((0.06 + 0.86 * p.loose) * posFactor, 0.03, 1);
+    const posFactor = Math.exp(1.6 * p.posAware * (v.pos - 0.5));
+    let range = clamp((0.06 + 0.86 * p.loose) * posFactor, 0.03, Math.min(1, 0.15 + 1.2 * p.loose));
     // "Always plays" hands still respect position for players who care about it.
     const loves = loves0 === 'fav' || (loves0 && (p.posAware < 0.55 || v.pos >= 0.5 || top <= range * 2)) ? loves0 : false;
     const plays = X ? `plays the top ${Math.round(range * 100)}%${p.posAware >= 0.6 ? (v.pos >= 0.9 ? ' on the button' : v.pos < 0.35 ? ' from early seats' : '') : ''}` : '';
@@ -438,19 +441,28 @@ export function decide(v, p0, rnd = Math.random) {
       return fold(`${handTxt}; ${plays}`);
     }
     const strictness = clamp((p.callReq - 0.3) / 1.3, 0, 1);
-    let cont = range * Math.pow(0.3 + 0.45 * (1 - strictness), v.raises) * (1 + 0.3 * p.hero);
+    // Each raise narrows things fast, whoever you are: an open gets called a lot, a 3-bet
+    // much less, a 4-bet only with the very best hands. Style moves it within those limits.
+    const cap = [1, 0.5, 0.2, 0.08, 0.04][Math.min(4, v.raises)] * (0.7 + 0.6 * p.loose);
     // Respect the nit's raise; widen up against the friend who raises with anything. Good
-    // readers lean on what they know harder.
-    if (bettor) cont *= clamp(Math.exp(-(2 + 4 * p.reads) * (betStrength(bettor) - S0)), 0.5, 2.5);
+    // readers lean on what they know harder — but a loose raiser still has something when
+    // they keep re-raising, so it only stretches the limits a little.
+    const exploit = bettor ? clamp(Math.exp(-(2 + 4 * p.reads) * (betStrength(bettor) - S0)), 0.5, 2.5) : 1;
+    let cont = Math.min(range * Math.pow(0.3 + 0.45 * (1 - strictness), v.raises) * (1 + 0.3 * p.hero), cap);
+    cont = Math.min(cont * exploit, cap * Math.sqrt(exploit));
     const commit = v.toCall / Math.max(1, v.stack);
     if (commit > 0.25) cont *= 1 - 0.6 * Math.min(1, commit) * Math.min(1, p.callReq);
-    // Tiny price to see a flop: almost everyone continues.
+    // Tiny price to see a flop after a single raise: almost everyone continues. (Not after
+    // re-raises: the pot looks big, but more raising is coming and the hands are strong.)
     const potOdds = v.toCall / (v.pot + v.toCall);
-    const cheap = potOdds < 0.2 + 0.15 * p.loose;
+    const cheap = v.raises === 1 && potOdds < 0.2 + 0.15 * p.loose;
     if (cheap) cont = Math.max(cont, range * (0.6 + 0.3 * p.loose));
     const facing = X ? `vs ${v.raises > 1 ? `${v.raises - 1 > 1 ? 'a 4-bet' : 'a re-raise'}` : 'a raise'}${v.aggrName ? ` from ${v.aggrName}` : ''}` : '';
     const contTxt = X ? `continues with the top ${Math.round(cont * 100)}% ${facing}` : '';
-    const reraise = cont * (0.15 + 0.45 * p.aggr) * 2 * p.threeBet;
+    // Re-raising for value: the top of their hands. 3-bets go wider for aggressive players;
+    // 4-bets and 5-bets are for premiums (big pairs, ace-king) whoever is raising.
+    const rr = [0, 0.03 + 0.1 * p.threeBet, 0.012 + 0.035 * p.threeBet, 0.008 + 0.015 * p.threeBet][Math.min(3, v.raises)];
+    const reraise = Math.min(cont, rr * (0.6 + 0.6 * p.aggr) * Math.pow(exploit, 0.3));
     if (X) {
       ctx.push(
         `Facing ${v.raises === 1 ? 'a raise' : v.raises === 2 ? 'a re-raise' : `${v.raises} raises`}${v.aggrName ? ` from ${v.aggrName}` : ''}: will continue with about the top ${P(cont)} here${commit > 0.25 ? `, tighter because it's ${P(commit)} of their stack` : ''}.`,
@@ -460,10 +472,18 @@ export function decide(v, p0, rnd = Math.random) {
       );
     }
     const edge = 0.02 + 0.08 * cont;
-    if (v.raises < 4 && rnd() < soft(reraise - top, edge * 0.5)) return raise(v.curBet * (2.6 + rnd() * 0.6), `${handTxt} — too good to just call ${facing}`);
+    // Small and middle pairs are fine to call with but play badly in a huge pot, so they
+    // aren't 4-bet or 5-bet like big pairs and ace-king.
+    const midPair = (v.hole[0] >> 2) === (v.hole[1] >> 2) && (v.hole[0] >> 2) < 8;
+    const topRR = v.raises >= 2 && midPair ? top * 3 : top;
+    if (v.raises < 4 && rnd() < soft(reraise - topRR, edge * 0.5)) return raise(v.curBet * (2.6 + rnd() * 0.6), `${handTxt} — too good to just call ${facing}`);
     if (rnd() < soft(cont - top, edge)) return call([`${handTxt}; ${contTxt}`, cheap && top > range * 0.6 ? 'cheap enough to see a flop' : '', bettorRead()].filter(Boolean).join(', '));
-    if (loves && commit < 0.15) return call(`${lovesTxt}, and the price is small`);
-    if (v.raises < 3 && rnd() < p.bluff * 0.06 * bluffMult) return raise(v.curBet * 3, `Re-raise bluff with ${code}`, 'bluff');
+    if (loves && v.raises === 1 && commit < 0.15) return call(`${lovesTxt}, and the price is small`);
+    // Bluff 3-bets happen; bluff 4-bets are rarer and want an ace or king (so the big hands
+    // are less likely out there). Nobody sane 5-bet bluffs.
+    const blocker = v.hole.some((c) => c >> 2 >= 11);
+    const bluffRR = v.raises === 1 ? p.bluff * 0.06 : v.raises === 2 && blocker ? p.bluff * 0.025 : 0;
+    if (rnd() < bluffRR * bluffMult) return raise(v.curBet * 3, `Re-raise bluff with ${code}${v.raises === 2 ? ' — the ace or king makes the big hands less likely' : ''}`, 'bluff');
     return fold([`${handTxt}; only ${contTxt}`, commit > 0.25 ? `would risk ${P(commit)} of their stack` : '', bettorRead()].filter(Boolean).join(', '));
   }
 
